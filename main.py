@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 import os
 from dotenv import load_dotenv
+from core.logic import process_message
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
@@ -17,8 +18,9 @@ async def on_ready():
     for guild in bot.guilds:
         print(f'In guild: {guild.name} (ID: {guild.id})')
 
-
-
+@bot.command()
+async def ping(ctx):
+    await ctx.send('Pong!')
 
 @bot.event
 async def on_message(message):
@@ -27,11 +29,13 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    if bot.user in message.mentions:
-        await message.channel.send("You summoned me?")
+    # Pass the full message and the bot user object to the logic layer
+    response = await process_message(message, bot.user)
+    
+    if response:
+        await message.channel.send(response)
 
     await bot.process_commands(message)
-
 
 
 bot.run(TOKEN)

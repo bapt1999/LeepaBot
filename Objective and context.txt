@@ -1,231 +1,30 @@
-Context Initialization: The Serverless Physics AI Pipeline - code name: LeepaBot.
+START OF DOCUMENT
 
-User Profile & Objectives
-Background: First-year physics master's student focusing on particle physics.
-Availability: Six months of free time for a personal engineering journey.
-Technical Stack: Python, C, R, LaTeX. Needs to learn cloud deployment.
-Languages: English, Spanish, French.
-Primary Goal: Build a functional, 24/7 autonomous Discord chatbot proof-of-concept that extracts and summarizes physics data. The priority is immediate operational uptime over long-term data retention or privacy.
+REVISED PROJECT DOCUMENT The Dynamic Physics Chatbot LeepaBot
 
-Project Definition
-A cloud-hosted, stateless Discord chatbot powered by a free external LLM API. The project abandons local model hosting and complex persistent memory to establish a lean, robust, always-on data pipeline operating independently of the user's older laptop.
+User Profile and Objectives
+The background is a first-year physics master student focusing on particle physics. Availability is six months of free time for a personal engineering journey. The primary goal is to build a highly conversational, context-aware, autonomous Discord chatbot that actively participates in discussions, shitposts, and organically reacts to the channel. The secondary feature is that the bot will eventually parse PDFs and images to autonomously return physics summaries.
 
 Core Architectural Features
-1. The Cloud Host (24/7 Uptime): The Python backend uses the discord.py library and is deployed on a free cloud hosting tier (like Oracle Cloud Always Free, fps.ms, or AWS Lambda). This keeps the bot permanently awake and listening, even when the local laptop is off.
-2. External AI Engine (The Brain): Computational heavy lifting is offloaded to a free external LLM API (such as Groq, OpenRouter, or Google Gemini). No AI processing happens on local hardware.
-3. Stateless Processing: The pipeline is strictly input-output. There is no database or long-term memory. Every uploaded PDF or text query is processed as an isolated task.
-4. Autonomous Ingestion & Multi-Lingual Output: The bot detects file uploads in designated Discord channels, extracts raw text, routes it to the external API, and returns physics summaries in English, Spanish, or French.
+The cloud host uses the Python discord library and is deployed on a free cloud hosting tier. The external AI engine offloads computational heavy lifting to a free external LLM API, with no AI processing on local hardware. The pipeline utilizes a multi-stage probability filter to route messages and protect API tokens.
 
-Directory Structure
-physics_bot/
-- main.py (boots the bot and listens for events)
-- requirements.txt (list of Python libraries)
-- .env (stores secret Discord Bot Token and external API keys)
-- core/discord_client.py (manages Discord connection)
-- core/api_handler.py (manages external LLM API requests)
-- utils/file_extractor.py (downloads attachments and scrapes PDF text)
-- utils/text_chunker.py (slices large texts for the API)
+Completed Phases
 
-Data Flow
-1. User drops a physics PDF into a Discord channel.
-2. Discord API sends a payload to the cloud-hosted Python script.
-3. The bot downloads the PDF to temporary cloud memory.
-4. Python extracts the raw text from the document.
-5. Python sends the text and a prompt to the external LLM API via HTTP request.
-6. The LLM API returns a summary (in EN, ES, or FR).
-7. The bot posts the summary to Discord and deletes the temporary file.
+Phase 1 and 2 Interface and Abstraction
+The bot reliably connects to Discord and separates event handling from business logic. Replacing the message processing logic with another implementation requires no changes to the main Discord code. The Discord layer is completely blind to the business logic.
 
+Phase 2.5 The Multi-State Router
+The bot utilizes a three-stage text routing architecture. Stage 1 is the Observer, a pure Python function that evaluates message geometry, word count, and structural heuristics to assign specific context tags like general chat or physics explanation. Stage 2 is the Router, which catches the tag and instantly kills the process if ignored, protecting API tokens. Stage 3 is the Generator, which dynamically builds the LLM system prompt based on the context tag and forces a strict JSON response schema to prevent token bleed.
 
+Pending Phases
 
+Phase 3 Context and Memory Pipeline
+The bot will utilize a dual memory architecture. The short-term memory will use a local clustering heuristic that evaluates timestamp decay and keyword overlap to group messages contextually, rather than relying on a fixed sliding window or Discord reply features. It will also assign temporary local IDs to messages to prevent the LLM from hallucinating eighteen-digit Discord Snowflakes. The long-term memory will utilize a server lore text file injected into the system prompt to maintain long-term server vibe awareness.
 
-LEEPA BOT DEVELOPMENT PLAN
+Phase 4 Personality Injection and Autonomous Engagement
+The architecture will implement a massive base prompt to give LeepaBot a consistent core identity underneath the situational tags. Zero-cost emoji reactions will be integrated directly into the Python router to give the bot a physical presence in the channel without spending API tokens.
 
-Project Goal:
-Build a Discord-based physics assistant powered by an LLM backend, with a clean architecture, strong separation of concerns, and progressive feature integration.
+Phase 5 The Physics Vanity Plate
+The bot will process uploaded documents by detecting message attachments, extracting text from PDFs, chunking long text to respect token limits, and seamlessly weaving heavy physics summaries into its existing conversational tone.
 
-Development Philosophy:
-Build from the outside inward. First stabilize the Discord interface layer. Then abstract internal logic. Only then integrate external APIs. File and PDF handling come later. Personality and refinement come last.
-
-PHASE 1 – DISCORD INTERFACE STABILITY
-
-Objective:
-Ensure the bot reliably connects to Discord, receives messages, and sends responses.
-
-Scope:
-
-Bot connects and stays online.
-
-on_ready event confirms successful login.
-
-on_message event fires for every message.
-
-Bot can respond to mentions.
-
-Bot can respond to simple commands (e.g. !ping).
-
-Messages are logged in the terminal for observability.
-
-Basic permissions and intents are correctly configured.
-
-Completion Criteria:
-
-Sending a message in Discord consistently triggers terminal output.
-
-Mentioning the bot triggers a deterministic response.
-
-No silent failures.
-
-Code structure places bot.run(TOKEN) at the end of the file.
-
-You understand how events flow from Discord to your handler.
-
-PHASE 2 – INTERNAL LOGIC ABSTRACTION (NO EXTERNAL APIs)
-
-Objective:
-Separate Discord event handling from message processing logic.
-
-Scope:
-
-Create a function such as process_message(content).
-
-on_message calls process_message instead of containing logic directly.
-
-process_message lives in a separate file or module.
-
-Bot responses are generated by this function.
-
-Simulated logic only (no LLM yet).
-Examples:
-
-If user says "hello" → return "Hi."
-
-If message contains "integral" → return canned explanation.
-
-If message length > N → return character count.
-
-Completion Criteria:
-
-Discord layer does not contain business logic.
-
-Replacing process_message with another implementation requires no changes to Discord code.
-
-The system behaves deterministically and is easy to test.
-
-PHASE 3 – LLM API INTEGRATION
-
-Objective:
-Integrate an external LLM backend cleanly and safely.
-
-Scope:
-
-Add HTTP request logic (async).
-
-Store API keys securely in environment variables.
-
-Call LLM inside process_message.
-
-Handle timeouts and API errors.
-
-Ensure bot never crashes due to API failure.
-
-Return LLM responses to Discord.
-
-Dependencies:
-Requires clean separation from Phase 2.
-
-Completion Criteria:
-
-User message → API call → LLM response → sent to Discord.
-
-API failures return graceful error messages.
-
-No blocking behavior.
-
-Logs show request and response cycle.
-
-PHASE 4 – FILE AND PDF PROCESSING PIPELINE
-
-Objective:
-Allow the bot to process uploaded documents.
-
-Scope:
-
-Detect message attachments.
-
-Download files safely.
-
-Extract text from PDFs.
-
-Chunk long text to respect token limits.
-
-Send chunks to LLM.
-
-Aggregate and return summaries.
-
-Dependencies:
-Requires stable Phase 3 implementation.
-
-Completion Criteria:
-
-User uploads PDF.
-
-Bot extracts text.
-
-Text is processed through LLM.
-
-Summary or response is returned.
-
-No crashes on malformed files.
-
-PHASE 5 – REFINEMENT AND ADVANCED FEATURES
-
-Objective:
-Improve usability, structure, and user experience.
-
-Scope:
-
-Add slash commands.
-
-Improve error handling.
-
-Add logging system.
-
-Add structured configuration.
-
-Add memory or conversation context if desired.
-
-Improve response formatting.
-
-Optional: persistent storage or database.
-
-Completion Criteria:
-
-Codebase is modular and clean.
-
-Features are stable.
-
-User experience is smooth.
-
-Adding new features does not require structural rewrites.
-
-DEPENDENCY STRUCTURE
-
-Phase 1
-↓
-Phase 2
-↓
-Phase 3
-↓
-Phase 4
-↓
-Phase 5
-
-Phases should be completed mostly linearly.
-Minor overlap between Phase 1 and Phase 2 is acceptable.
-Phase 3 cannot begin without Phase 2 abstraction.
-Phase 4 depends on Phase 3.
-Phase 5 refines everything.
-
-Current Status:
-Phase 1A completed (Bot connectivity confirmed).
-Next milestone: Complete Phase 1 and begin Phase 2 abstraction.
+END OF DOCUMENT
