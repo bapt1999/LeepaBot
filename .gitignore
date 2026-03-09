@@ -3,3 +3,4 @@ venv/
 __pycache__/
 secrets.txt
 git pense bête.txt
+core/lores/

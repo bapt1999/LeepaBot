@@ -12,19 +12,13 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 BAPT_DISCORD_ID = int(os.getenv('BAPT_DISCORD_ID', 0))
 
-# ==========================================
-# BOT INTERACTION LIMITS (The Loop Slayer)
-# ==========================================
-# Securely pulled from the .env file
-OTHER_BOT_ID = int(os.getenv('OTHER_BOT_ID', 0)) 
-OTHER_BOT_REPLY_CAP = 1 # Maximum back-and-forth replies permitted
-
 active_channel_memories = {}
 max_messages_in_memory = 20
 
 # ==========================================
 # LEEPA'S CONTROL PANEL (Tuning Knobs)
 # ==========================================
+# Adjust these decimals (0.0 to 1.0) to instantly change how chatty the bot is.
 PROBABILITIES = {
     "QUESTION": 0.30,
     "QUICK_BANTER": 0.10,
@@ -38,6 +32,7 @@ PROBABILITIES = {
 # ==========================================
 # PRE-COMPILED PATTERNS & LISTS
 # ==========================================
+# Compiling these once at startup saves CPU cycles on every single message
 REGEX_NAMED = re.compile(r'\b(leepa|leep)\b')
 REGEX_VIP = re.compile(r'\b(hun|sweetie)\b')
 REGEX_QUESTION = re.compile(r'^(who|what|where|when|why|how|por qué|cómo|pourquoi|comment)\b')
@@ -47,58 +42,24 @@ SHITPOST_KEYWORDS = ['lmao', 'lol', 'bruh', 'based', 'cringe', 'fr fr', 'no cap'
 
 
 def get_channel_memory(channel_id: int) -> ShortTermMemory:
+    """Retrieves or creates a dedicated memory queue for a specific channel."""
     if channel_id not in active_channel_memories:
         active_channel_memories[channel_id] = ShortTermMemory(max_size=max_messages_in_memory)  
     return active_channel_memories[channel_id]
 
 
-async def get_reply_chain_depth(message, bot_user) -> int:
-    """Climbs the Discord reply tree backwards, fetching from API if cache fails."""
-    count = 0
-    current_msg = message
-    
-    while current_msg.reference and current_msg.reference.message_id:
-        parent_msg = current_msg.reference.resolved
-        
-        # If the parent message is not in my local cache, forcefully fetch it
-        if parent_msg is None:
-            try:
-                parent_msg = await current_msg.channel.fetch_message(current_msg.reference.message_id)
-            except Exception as e:
-                logger.warning(f"Could not fetch parent message for loop check: {e}")
-                break
-                
-        if parent_msg.author.id in [bot_user.id, OTHER_BOT_ID]:
-            count += 1
-            current_msg = parent_msg
-        else:
-            break
-            
-    return count
-
-
-async def evaluate_cost_function(message, bot_user) -> str:
-    # Phase 0: The Infinite Loop Slayer
-    if message.author.id == OTHER_BOT_ID and OTHER_BOT_ID != 0:
-        pingpong_depth = await get_reply_chain_depth(message, bot_user)
-        if pingpong_depth >= (OTHER_BOT_REPLY_CAP * 2):
-            return "IGNORE"
-
+def evaluate_cost_function(message, bot_user) -> str:
     raw_content = message.content.strip()
     content_lower = raw_content.lower()
     word_count = len(raw_content.split())
     
     # Phase 1: Guaranteed Engagement (Hard Overrides)
-    is_mentioned = bot_user in message.mentions  
-    is_replied_to = message.reference and message.reference.resolved and message.reference.resolved.author == bot_user 
+    is_mentioned = bot_user in message.mentions or (message.reference and message.reference.resolved and message.reference.resolved.author == bot_user)
     is_named = bool(REGEX_NAMED.search(content_lower))
     is_creator_hun = (message.author.id == BAPT_DISCORD_ID) and bool(REGEX_VIP.search(content_lower))
     
     if is_mentioned or is_named or is_creator_hun:
         return "DIRECT_ENGAGEMENT"
-    
-    if is_replied_to:
-        return "QUOTED_ENGAGEMENT"
 
     if any(word in content_lower for word in PHYSICS_KEYWORDS):
         return "PHYSICS_EXPLANATION"
@@ -142,7 +103,7 @@ async def process_message(message, bot_user) -> str:
     local_memory = get_channel_memory(message.channel.id)
     local_memory.add_message(message.author.name, message.content)
     
-    tag = await evaluate_cost_function(message, bot_user)
+    tag = evaluate_cost_function(message, bot_user)
     
     if tag == "IGNORE":
         return ""
@@ -162,10 +123,7 @@ async def process_message(message, bot_user) -> str:
             logger.error(f"Discord API failed to add reaction '{reaction_emoji}': {e}")
     
     if reply_text:
-        try:
-            await message.reply(reply_text)
-            local_memory.add_message("Leepa", reply_text)
-        except Exception as e:
-            logger.error(f"Discord API failed to reply: {e}")
-            
+        local_memory.add_message("Leepa", reply_text)
+        return reply_text
+        
     return ""

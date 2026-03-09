@@ -6,25 +6,40 @@ User Profile and Objectives
 The background is a first-year physics master student focusing on particle physics. Availability is six months of free time for a personal engineering journey. The primary goal is to build a highly conversational, context-aware, autonomous Discord chatbot that actively participates in discussions, shitposts, and organically reacts to the channel. The secondary feature is that the bot will eventually parse PDFs and images to autonomously return physics summaries.
 
 Core Architectural Features
-The cloud host uses the Python discord library and is deployed on a free cloud hosting tier. The external AI engine offloads computational heavy lifting to a free external LLM API, with no AI processing on local hardware. The pipeline utilizes a multi-stage probability filter to route messages and protect API tokens.
+The host uses the Python discord library. The external AI engine offloads computational heavy lifting to a dual-model monolithic architecture supporting both Gemini and Groq via a master switch, maximizing free-tier token efficiency. Sensitive information like API keys and the developer Discord ID is secured in an environment file. The pipeline utilizes a multi-stage probability filter to route messages.
 
 Completed Phases
 
 Phase 1 and 2 Interface and Abstraction
-The bot reliably connects to Discord and separates event handling from business logic. Replacing the message processing logic with another implementation requires no changes to the main Discord code. The Discord layer is completely blind to the business logic.
+The bot reliably connects to Discord and separates event handling from business logic.
 
 Phase 2.5 The Multi-State Router
-The bot utilizes a three-stage text routing architecture. Stage 1 is the Observer, a pure Python function that evaluates message geometry, word count, and structural heuristics to assign specific context tags like general chat or physics explanation. Stage 2 is the Router, which catches the tag and instantly kills the process if ignored, protecting API tokens. Stage 3 is the Generator, which dynamically builds the LLM system prompt based on the context tag and forces a strict JSON response schema to prevent token bleed.
+The bot utilizes a dynamic text routing architecture. Phase 1 is Guaranteed Engagement. Phase 2 is Conversational Hooks. Phase 3 is Chaos and Energy Matching. Phase 4 is The Ambient Vibe.
+
+Phase 3A Short-Term Memory and Compartmentalization
+The bot maintains a rolling RAM queue of the last twenty messages, strictly isolated by unique Discord Channel IDs to prevent context bleeding. The LLM brain also dynamically isolates server lore using unique Guild IDs and asynchronous file reading, falling back gracefully if no lore exists.
+
+Phase 4 Physical Emoji Reactions and Native Thread Replies
+The JSON output schema was modified to decouple physical Discord API reactions from generated text, allowing the bot to autonomously drop emojis directly onto messages based on emotional context. The logic layer natively uses Discord's reply function to visually link conversations.
+
+Phase 4.5 The Infinite Loop Slayer
+The logic layer utilizes an asynchronous thread-climbing algorithm to physically fetch missing cache messages from the Discord API. This measures the exact ping-pong depth of an interaction with a specific target bot and forcefully kills the response pipeline to prevent infinite looping.
+
+Current Issues and Immediate Pivots
+Feedback indicates the bot is too chatty and lacks sufficient reasoning capability. The immediate pivot involves tuning down the probability heuristics in the logic script to reduce engagement frequency. To increase intelligence, the primary Groq model will be swapped to a Qwen-based architecture.
+
+New Architectural Goal The Lightweight API Cloud
+To achieve 24/7 uptime for free without needing a paid GPU server, the bot will eventually be deployed to a free cloud hosting service as a lightweight router. It will continue to use the Groq API to offload the heavy model computation.
 
 Pending Phases
 
-Phase 3 Context and Memory Pipeline
-The bot will utilize a dual memory architecture. The short-term memory will use a local clustering heuristic that evaluates timestamp decay and keyword overlap to group messages contextually, rather than relying on a fixed sliding window or Discord reply features. It will also assign temporary local IDs to messages to prevent the LLM from hallucinating eighteen-digit Discord Snowflakes. The long-term memory will utilize a server lore text file injected into the system prompt to maintain long-term server vibe awareness.
+Phase 3B Long-Term Memory
+The bot will transition to a local clustering heuristic using vector embeddings and exponential time decay.
 
-Phase 4 Personality Injection and Autonomous Engagement
-The architecture will implement a massive base prompt to give LeepaBot a consistent core identity underneath the situational tags. Zero-cost emoji reactions will be integrated directly into the Python router to give the bot a physical presence in the channel without spending API tokens.
+Phase 4.6 Generalized Bot Defense
+Transition the hardcoded target bot ID check in Phase 0 into a generalized heuristic that dynamically discourages or limits interactions with all Discord accounts flagged as bots to proactively prevent server spam.
 
 Phase 5 The Physics Vanity Plate
-The bot will process uploaded documents by detecting message attachments, extracting text from PDFs, chunking long text to respect token limits, and seamlessly weaving heavy physics summaries into its existing conversational tone.
+The bot will process uploaded documents by extracting text from PDFs and returning high-level physics summaries.
 
 END OF DOCUMENT

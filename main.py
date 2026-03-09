@@ -18,9 +18,6 @@ async def on_ready():
     for guild in bot.guilds:
         print(f'In guild: {guild.name} (ID: {guild.id})')
 
-@bot.command()
-async def ping(ctx):
-    await ctx.send('Pong!')
 
 @bot.event
 async def on_message(message):
