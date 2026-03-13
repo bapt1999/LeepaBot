@@ -1,9 +1,10 @@
+import asyncio
 import random
 import re
 import os
 import logging
 from dotenv import load_dotenv
-from core.api_handler import generate_chat_response
+from core.api_handler import generate_chat_response, summarize_chat_logs, extract_recurring_patterns
 from core.memory_queue import ShortTermMemory
 
 logger = logging.getLogger(__name__)
@@ -138,9 +139,36 @@ async def evaluate_cost_function(message, bot_user) -> str:
     return "IGNORE"
 
 
+async def background_summarize(local_memory, extracted_text: str):
+    """Runs asynchronously to compress memory without blocking the chat flow."""
+    try:
+        new_summary = await summarize_chat_logs(extracted_text, local_memory.running_summary)
+        if new_summary:
+            local_memory.update_running_summary(new_summary)
+            logger.info(f"Memory compressed. New summary length: {len(new_summary)} chars.")
+        else:
+            local_memory.is_summarizing = False 
+    except Exception as e:
+        logger.error(f"Background compression crashed: {e}")
+        local_memory.is_summarizing = False
+
 async def process_message(message, bot_user) -> str:
     local_memory = get_channel_memory(message.channel.id)
-    local_memory.add_message(message.author.name, message.content)
+    local_memory.add_message(message.author.display_name, message.content)
+    
+    server_id = str(message.guild.id) if message.guild else "DM"
+    
+    # --- 1. SHORT-TERM COMPRESSION TRIGGER ---
+    overflow_text = local_memory.extract_overflow_for_summary()
+    if overflow_text:
+        asyncio.create_task(background_summarize(local_memory, overflow_text))
+        
+    # --- 2. MACRO PATTERN EXTRACTION TRIGGER ---
+    # Every 50 messages, scan the summary for recurring jokes and permanent facts
+    if local_memory.total_message_count % 50 == 0 and local_memory.running_summary:
+        logger.info(f"Message 50 reached. Scanning summary for long-term patterns...")
+        asyncio.create_task(extract_recurring_patterns(server_id, local_memory.running_summary))
+    # -------------------------------
     
     tag = await evaluate_cost_function(message, bot_user)
     
@@ -148,9 +176,9 @@ async def process_message(message, bot_user) -> str:
         return ""
         
     context_block = local_memory.get_context_block()
-    server_id = str(message.guild.id) if message.guild else "DM"
     
-    response_data = await generate_chat_response(context_block, tag, message.content, server_id)
+    named_target_message = f"{message.author.display_name}: {message.content}"
+    response_data = await generate_chat_response(context_block, tag, named_target_message, server_id)
     
     reply_text = response_data.get("response", "").strip()
     reaction_emoji = response_data.get("reaction_emoji", "").strip()

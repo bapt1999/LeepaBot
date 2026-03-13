@@ -6,7 +6,7 @@ User Profile and Objectives
 The background is a first-year physics master student focusing on particle physics. Availability is six months of free time for a personal engineering journey. The primary goal is to build a highly conversational, context-aware, autonomous Discord chatbot that actively participates in discussions, shitposts, and organically reacts to the channel. The secondary feature is that the bot will eventually parse PDFs and images to autonomously return physics summaries.
 
 Core Architectural Features
-The host uses the Python discord library. The external AI engine offloads computational heavy lifting to a dual-model monolithic architecture supporting both Gemini and Groq via a master switch, maximizing free-tier token efficiency. Sensitive information like API keys and the developer Discord ID is secured in an environment file. The pipeline utilizes a multi-stage probability filter to route messages.
+The host uses the Python discord library. The external AI engine offloads computational heavy lifting to a multi-model monolithic architecture supporting Gemini, Groq, DeepSeek, and OpenRouter via a master profile dictionary, maximizing free-tier token efficiency. Sensitive information like API keys and the developer Discord ID is secured in an environment file. The pipeline utilizes a multi-stage probability filter to route messages.
 
 Completed Phases
 
@@ -17,7 +17,13 @@ Phase 2.5 The Multi-State Router
 The bot utilizes a dynamic text routing architecture. Phase 1 is Guaranteed Engagement. Phase 2 is Conversational Hooks. Phase 3 is Chaos and Energy Matching. Phase 4 is The Ambient Vibe.
 
 Phase 3A Short-Term Memory and Compartmentalization
-The bot maintains a rolling RAM queue of the last twenty messages, strictly isolated by unique Discord Channel IDs to prevent context bleeding. The LLM brain also dynamically isolates server lore using unique Guild IDs and asynchronous file reading, falling back gracefully if no lore exists.
+The bot maintains a strictly isolated RAM queue for unique Discord Channel IDs to prevent context bleeding. The LLM brain also dynamically isolates server lore using unique Guild IDs and asynchronous file reading.
+
+Phase 3A.5 The "Breathing" Memory Queue
+The memory manager operates on a dynamic compression cycle. When the queue hits 25 messages, it slices the oldest 5 messages and fires them to the LLM via a non-blocking background thread. The LLM compresses these logs into a dense running summary, allowing the bot to retain permanent context without infinitely expanding the token payload.
+
+Phase 3B Long-Term Memory and Semantic Lore Retrieval
+The bot utilizes a dependency-free, pure Python RAG pipeline. Using the gemini-embedding-001 model, it vectorizes server lore into RAM and uses cosine similarity to inject only mathematically relevant paragraphs into the prompt. Furthermore, every 50 messages, a macro-extraction background task scans the running summary for new running jokes or patterns, physically appending them to the server's persistent .txt file and instantly vectorizing them into active memory.
 
 Phase 4 Physical Emoji Reactions and Native Thread Replies
 The JSON output schema was modified to decouple physical Discord API reactions from generated text, allowing the bot to autonomously drop emojis directly onto messages based on emotional context. The logic layer natively uses Discord's reply function to visually link conversations.
@@ -25,16 +31,19 @@ The JSON output schema was modified to decouple physical Discord API reactions f
 Phase 4.5 The Infinite Loop Slayer
 The logic layer utilizes an asynchronous thread-climbing algorithm to physically fetch missing cache messages from the Discord API. This measures the exact ping-pong depth of an interaction with a specific target bot and forcefully kills the response pipeline to prevent infinite looping.
 
-Current Issues and Immediate Pivots
-Feedback indicates the bot is too chatty and lacks sufficient reasoning capability. The immediate pivot involves tuning down the probability heuristics in the logic script to reduce engagement frequency. To increase intelligence, the primary Groq model will be swapped to a Qwen-based architecture.
+Phase 4.7 API Multiplexer and Resiliency
+The API handler utilizes a raw, asynchronous HTTP connection pool to bypass heavy SDKs. A master profile dictionary routes requests to OpenAI-compatible endpoints across various providers. Built-in regex sanitizers strip markdown hallucinations from open-source free models, and custom headers bypass OpenRouter's rate-limiting filters.
+
+Phase 4.8 Identity and Context Injection
+Discord's display_name property is explicitly prepended to the message payload and short-term memory queue, granting the LLM localized context on server-specific nicknames and user identities.
+
+Phase 4.9 Payload Prefix Caching
+The API assembly strictly isolates static directives from dynamic user history into separate "system" and "user" JSON roles. This exploits enterprise API VRAM caching, dropping input token costs for the bot's core brain to near zero.
 
 New Architectural Goal The Lightweight API Cloud
-To achieve 24/7 uptime for free without needing a paid GPU server, the bot will eventually be deployed to a free cloud hosting service as a lightweight router. It will continue to use the Groq API to offload the heavy model computation.
+To achieve 24/7 uptime for free without needing a paid GPU server, the bot will eventually be deployed to a free cloud hosting service as a lightweight router. It will continue to use external APIs to offload the heavy model computation.
 
 Pending Phases
-
-Phase 3B Long-Term Memory
-The bot will transition to a local clustering heuristic using vector embeddings and exponential time decay.
 
 Phase 4.6 Generalized Bot Defense
 Transition the hardcoded target bot ID check in Phase 0 into a generalized heuristic that dynamically discourages or limits interactions with all Discord accounts flagged as bots to proactively prevent server spam.

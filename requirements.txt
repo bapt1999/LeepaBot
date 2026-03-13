@@ -4,3 +4,5 @@ pymupdf
 python-dotenv
 langdetect
 google-generativeai
+httpx
+aiofiles
