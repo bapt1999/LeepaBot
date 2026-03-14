@@ -281,8 +281,9 @@ async def summarize_chat_logs(extracted_text: str, current_summary: str) -> str:
         logger.error(f"Failed to generate summary: {e}")
         return ""
 
+
 # ==========================================
-# PHASE 5: MACRO PATTERN EXTRACTION (Every 50 Msgs)
+# PHASE 5: MACRO PATTERN EXTRACTION
 # ==========================================
 async def extract_recurring_patterns(server_id: str, current_summary: str):
     """Analyzes the long-term running summary to find established patterns and jokes."""
@@ -305,4 +306,4 @@ async def extract_recurring_patterns(server_id: str, current_summary: str):
             await lore_db.add_dynamic_lore(server_id, new_patterns)
             
     except Exception as e:
-        logger.error(f"Failed to extract long-term patterns: {e}")
+        logger.error(f"Long-term pattern extraction crashed: {e}")

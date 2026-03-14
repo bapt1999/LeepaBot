@@ -19,11 +19,11 @@ The bot utilizes a dynamic text routing architecture. Phase 1 is Guaranteed Enga
 Phase 3A Short-Term Memory and Compartmentalization
 The bot maintains a strictly isolated RAM queue for unique Discord Channel IDs to prevent context bleeding. The LLM brain also dynamically isolates server lore using unique Guild IDs and asynchronous file reading.
 
-Phase 3A.5 The "Breathing" Memory Queue
+Phase 3A.5 The Breathing Memory Queue
 The memory manager operates on a dynamic compression cycle. When the queue hits 25 messages, it slices the oldest 5 messages and fires them to the LLM via a non-blocking background thread. The LLM compresses these logs into a dense running summary, allowing the bot to retain permanent context without infinitely expanding the token payload.
 
 Phase 3B Long-Term Memory and Semantic Lore Retrieval
-The bot utilizes a dependency-free, pure Python RAG pipeline. Using the gemini-embedding-001 model, it vectorizes server lore into RAM and uses cosine similarity to inject only mathematically relevant paragraphs into the prompt. Furthermore, every 50 messages, a macro-extraction background task scans the running summary for new running jokes or patterns, physically appending them to the server's persistent .txt file and instantly vectorizing them into active memory.
+The bot utilizes a dependency-free, pure Python RAG pipeline. Using the gemini-embedding-001 model, it vectorizes server lore into RAM and uses cosine similarity to inject only mathematically relevant memories into the prompt. The storage architecture uses a structured JSON database to track memory metadata. Every 50 messages, a macro-extraction background task scans the running summary for new running jokes or patterns. To manage database size natively, the memory utilizes a dynamic half-life exponential decay formula based on hit counts, systematically purging unused lore every 5 commits while granting permanent VIP Core Memory status to high-value entries.
 
 Phase 4 Physical Emoji Reactions and Native Thread Replies
 The JSON output schema was modified to decouple physical Discord API reactions from generated text, allowing the bot to autonomously drop emojis directly onto messages based on emotional context. The logic layer natively uses Discord's reply function to visually link conversations.
@@ -38,7 +38,7 @@ Phase 4.8 Identity and Context Injection
 Discord's display_name property is explicitly prepended to the message payload and short-term memory queue, granting the LLM localized context on server-specific nicknames and user identities.
 
 Phase 4.9 Payload Prefix Caching
-The API assembly strictly isolates static directives from dynamic user history into separate "system" and "user" JSON roles. This exploits enterprise API VRAM caching, dropping input token costs for the bot's core brain to near zero.
+The API assembly strictly isolates static directives from dynamic user history into separate system and user JSON roles. This exploits enterprise API VRAM caching, dropping input token costs for the bot's core brain to near zero.
 
 New Architectural Goal The Lightweight API Cloud
 To achieve 24/7 uptime for free without needing a paid GPU server, the bot will eventually be deployed to a free cloud hosting service as a lightweight router. It will continue to use external APIs to offload the heavy model computation.
