@@ -20,6 +20,9 @@ BAPT_DISCORD_ID = int(os.getenv('BAPT_DISCORD_ID', 0))
 OTHER_BOT_ID = int(os.getenv('OTHER_BOT_ID', 0)) 
 OTHER_BOT_REPLY_CAP = 1 # Maximum back-and-forth replies permitted
 
+# NEW: The Interception Registry
+active_processing_locks = {}
+
 active_channel_memories = {}
 max_messages_in_memory = 20
 
@@ -89,6 +92,9 @@ async def evaluate_cost_function(message, bot_user) -> str:
     content_lower = raw_content.lower()
     word_count = len(raw_content.split())
     
+    # NEW: Determine if the author is the rival bot to apply probability nerfs
+    is_rival_bot = (message.author.id == OTHER_BOT_ID and OTHER_BOT_ID != 0)
+    
     # Phase 1: Guaranteed Engagement (Hard Overrides)
     is_mentioned = bot_user in message.mentions  
     is_replied_to = message.reference and message.reference.resolved and message.reference.resolved.author == bot_user 
@@ -108,32 +114,40 @@ async def evaluate_cost_function(message, bot_user) -> str:
     is_question = bool(REGEX_QUESTION.search(content_lower)) or '?' in raw_content
     
     if is_question:
-        if random.random() < PROBABILITIES["QUESTION"]: 
+        prob = PROBABILITIES["QUESTION"] * (0.5 if is_rival_bot else 1.0)
+        if random.random() < prob: 
             return "GENERAL_CHAT"
 
     if 0 < word_count <= 5:
-        if random.random() < PROBABILITIES["QUICK_BANTER"]: 
+        prob = PROBABILITIES["QUICK_BANTER"] * (0.5 if is_rival_bot else 1.0)
+        if random.random() < prob: 
             return "QUICK_BANTER"
 
     # Phase 3: Chaos & Energy Matching (Shitposts, Yelling, Lore Dumps)
     is_yelling = raw_content.isupper() and len(raw_content) > 5
     
     if is_yelling:
-        if random.random() < PROBABILITIES["YELLING"]: 
+        prob = PROBABILITIES["YELLING"] * (0.5 if is_rival_bot else 1.0)
+        if random.random() < prob: 
             return "YELLING"
             
     if any(word in content_lower for word in SHITPOST_KEYWORDS):
-        if random.random() < PROBABILITIES["SHITPOST"]:
+        prob = PROBABILITIES["SHITPOST"] * (0.5 if is_rival_bot else 1.0)
+        if random.random() < prob:
             return "SHITPOST"
 
     if word_count > 500:
-        if random.random() < PROBABILITIES["WALL_OF_TEXT"]: 
+        prob_wall = PROBABILITIES["WALL_OF_TEXT"] * (0.5 if is_rival_bot else 1.0)
+        prob_construct = PROBABILITIES["CONSTRUCTIVE"] * (0.5 if is_rival_bot else 1.0)
+        
+        if random.random() < prob_wall: 
             return "WALL_OF_TEXT" 
-        if random.random() < PROBABILITIES["CONSTRUCTIVE"]: 
+        if random.random() < prob_construct: 
             return "CONSTRUCTIVE_RESPONSE"
 
     # Phase 4: The Ambient Vibe (Random Chatter)
-    if random.random() < PROBABILITIES["AMBIENT"]: 
+    prob_ambient = PROBABILITIES["AMBIENT"] * (0.5 if is_rival_bot else 1.0)
+    if random.random() < prob_ambient: 
         return "GENERAL_CHAT"
         
     return "IGNORE"
@@ -153,22 +167,31 @@ async def background_summarize(local_memory, extracted_text: str):
         local_memory.is_summarizing = False
 
 async def process_message(message, bot_user) -> str:
+    # --- 1. THE SNIPE DETECTOR ---
+    # If this incoming message is from the rival bot, check if he is replying to a message we are currently thinking about.
+    if message.author.id == OTHER_BOT_ID and OTHER_BOT_ID != 0 and message.reference:
+        target_id = message.reference.message_id
+        if target_id in active_processing_locks:
+            # Flip the kill-switch!
+            active_processing_locks[target_id] = True
+            logger.info(f"Rival bot answered message {target_id} first! Aborting Leepa's response.")
+    # -----------------------------
+
     local_memory = get_channel_memory(message.channel.id)
     local_memory.add_message(message.author.display_name, message.content)
     
     server_id = str(message.guild.id) if message.guild else "DM"
     
-    # --- 1. SHORT-TERM COMPRESSION TRIGGER ---
+    # --- SHORT-TERM & LONG-TERM MEMORY TRIGGERS ---
     overflow_text = local_memory.extract_overflow_for_summary()
     if overflow_text:
         asyncio.create_task(background_summarize(local_memory, overflow_text))
         
-    # --- 2. MACRO PATTERN EXTRACTION TRIGGER ---
     # Every 50 messages, scan the summary for recurring jokes and permanent facts
     if local_memory.total_message_count % 50 == 0 and local_memory.running_summary:
         logger.info(f"Message 50 reached. Scanning summary for long-term patterns...")
         asyncio.create_task(extract_recurring_patterns(server_id, local_memory.running_summary))
-    # -------------------------------
+    # ----------------------------------------------
     
     tag = await evaluate_cost_function(message, bot_user)
     
@@ -176,9 +199,25 @@ async def process_message(message, bot_user) -> str:
         return ""
         
     context_block = local_memory.get_context_block()
-    
     named_target_message = f"{message.author.display_name}: {message.content}"
+    
+    # --- 2. THE LOCK REGISTRY ---
+    # Register the message we are about to answer and set the kill-switch to False
+    active_processing_locks[message.id] = False
+    
+    # Yield control to the event loop. This is where the rival bot has the chance to snipe us.
     response_data = await generate_chat_response(context_block, tag, named_target_message, server_id)
+    
+    # We woke up! Check if the rival flipped our switch while we were thinking.
+    if active_processing_locks.get(message.id) is True:
+        # Clean up the lock and silently abort the response
+        del active_processing_locks[message.id]
+        return ""
+        
+    # We survived the waiting period. Clean up the lock and proceed to fire.
+    if message.id in active_processing_locks:
+        del active_processing_locks[message.id]
+    # ----------------------------
     
     reply_text = response_data.get("response", "").strip()
     reaction_emoji = response_data.get("reaction_emoji", "").strip()
