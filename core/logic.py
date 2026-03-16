@@ -14,20 +14,19 @@ load_dotenv()
 BAPT_DISCORD_ID = int(os.getenv('BAPT_DISCORD_ID', 0))
 
 # ==========================================
-# BOT INTERACTION LIMITS (The Loop Slayer)
+# BOT CONCURRENCY & RATE LIMITING
 # ==========================================
-# Securely pulled from the .env file
 OTHER_BOT_ID = int(os.getenv('OTHER_BOT_ID', 0)) 
-OTHER_BOT_REPLY_CAP = 1 # Maximum back-and-forth replies permitted
+OTHER_BOT_REPLY_CAP = 1 
 
-# NEW: The Interception Registry
+# Global state for response interception
 active_processing_locks = {}
 
 active_channel_memories = {}
 max_messages_in_memory = 20
 
 # ==========================================
-# LEEPA'S CONTROL PANEL (Tuning Knobs)
+# RESPONSE PROBABILITY MATRIX
 # ==========================================
 PROBABILITIES = {
     "QUESTION": 0.30,
@@ -40,7 +39,7 @@ PROBABILITIES = {
 }
 
 # ==========================================
-# PRE-COMPILED PATTERNS & LISTS
+# PRE-COMPILED REGEX PATTERNS & KEYWORDS
 # ==========================================
 REGEX_NAMED = re.compile(r'\b(leepa|leep)\b')
 REGEX_VIP = re.compile(r'\b(hun|sweetie)\b')
@@ -64,12 +63,12 @@ async def get_reply_chain_depth(message, bot_user) -> int:
     while current_msg.reference and current_msg.reference.message_id:
         parent_msg = current_msg.reference.resolved
         
-        # If the parent message is not in my local cache, forcefully fetch it
+        # Fallback to explicit API fetch if message is absent from local cache
         if parent_msg is None:
             try:
                 parent_msg = await current_msg.channel.fetch_message(current_msg.reference.message_id)
             except Exception as e:
-                logger.warning(f"Could not fetch parent message for loop check: {e}")
+                logger.warning(f"Failed to fetch parent message for loop constraint check: {e}")
                 break
                 
         if parent_msg.author.id in [bot_user.id, OTHER_BOT_ID]:
@@ -82,7 +81,7 @@ async def get_reply_chain_depth(message, bot_user) -> int:
 
 
 async def evaluate_cost_function(message, bot_user) -> str:
-    # Phase 0: The Infinite Loop Slayer
+    # Phase 0: Loop Prevention
     if message.author.id == OTHER_BOT_ID and OTHER_BOT_ID != 0:
         pingpong_depth = await get_reply_chain_depth(message, bot_user)
         if pingpong_depth >= (OTHER_BOT_REPLY_CAP * 2):
@@ -92,10 +91,10 @@ async def evaluate_cost_function(message, bot_user) -> str:
     content_lower = raw_content.lower()
     word_count = len(raw_content.split())
     
-    # NEW: Determine if the author is the rival bot to apply probability nerfs
+    # Identify target bot account for probability dampening
     is_rival_bot = (message.author.id == OTHER_BOT_ID and OTHER_BOT_ID != 0)
     
-    # Phase 1: Guaranteed Engagement (Hard Overrides)
+    # Phase 1: Guaranteed Engagement overrides
     is_mentioned = bot_user in message.mentions  
     is_replied_to = message.reference and message.reference.resolved and message.reference.resolved.author == bot_user 
     is_named = bool(REGEX_NAMED.search(content_lower))
@@ -110,7 +109,7 @@ async def evaluate_cost_function(message, bot_user) -> str:
     if any(word in content_lower for word in PHYSICS_KEYWORDS):
         return "PHYSICS_EXPLANATION"
 
-    # Phase 2: Conversational Hooks (Questions & Banter)
+    # Phase 2: Conversational Hooks
     is_question = bool(REGEX_QUESTION.search(content_lower)) or '?' in raw_content
     
     if is_question:
@@ -123,7 +122,7 @@ async def evaluate_cost_function(message, bot_user) -> str:
         if random.random() < prob: 
             return "QUICK_BANTER"
 
-    # Phase 3: Chaos & Energy Matching (Shitposts, Yelling, Lore Dumps)
+    # Phase 3: Sentiment & Energy Matching
     is_yelling = raw_content.isupper() and len(raw_content) > 5
     
     if is_yelling:
@@ -145,7 +144,7 @@ async def evaluate_cost_function(message, bot_user) -> str:
         if random.random() < prob_construct: 
             return "CONSTRUCTIVE_RESPONSE"
 
-    # Phase 4: The Ambient Vibe (Random Chatter)
+    # Phase 4: Ambient Conversation
     prob_ambient = PROBABILITIES["AMBIENT"] * (0.5 if is_rival_bot else 1.0)
     if random.random() < prob_ambient: 
         return "GENERAL_CHAT"
@@ -154,44 +153,42 @@ async def evaluate_cost_function(message, bot_user) -> str:
 
 
 async def background_summarize(local_memory, extracted_text: str):
-    """Runs asynchronously to compress memory without blocking the chat flow."""
+    """Executes asynchronous memory compression without blocking the main event loop."""
     try:
         new_summary = await summarize_chat_logs(extracted_text, local_memory.running_summary)
         if new_summary:
             local_memory.update_running_summary(new_summary)
-            logger.info(f"Memory compressed. New summary length: {len(new_summary)} chars.")
+            logger.info(f"Memory compressed. Active summary length: {len(new_summary)} characters.")
         else:
             local_memory.is_summarizing = False 
     except Exception as e:
-        logger.error(f"Background compression crashed: {e}")
+        logger.error(f"Background memory compression failed: {e}")
         local_memory.is_summarizing = False
 
 async def process_message(message, bot_user) -> str:
-    # --- 1. THE SNIPE DETECTOR ---
-    # If this incoming message is from the rival bot, check if he is replying to a message we are currently thinking about.
+    # Interception Matrix: Detect concurrent bot responses
     if message.author.id == OTHER_BOT_ID and OTHER_BOT_ID != 0 and message.reference:
         target_id = message.reference.message_id
         if target_id in active_processing_locks:
-            # Flip the kill-switch!
-            active_processing_locks[target_id] = True
-            logger.info(f"Rival bot answered message {target_id} first! Aborting Leepa's response.")
-    # -----------------------------
+            # Verify lock immunity status before flagging for abortion
+            if active_processing_locks[target_id] != "IMMUNE":
+                active_processing_locks[target_id] = True
+                logger.info(f"Concurrent response detected for message {target_id}. Aborting execution.")
 
     local_memory = get_channel_memory(message.channel.id)
     local_memory.add_message(message.author.display_name, message.content)
     
     server_id = str(message.guild.id) if message.guild else "DM"
     
-    # --- SHORT-TERM & LONG-TERM MEMORY TRIGGERS ---
+    # Memory Pipeline Triggers
     overflow_text = local_memory.extract_overflow_for_summary()
     if overflow_text:
         asyncio.create_task(background_summarize(local_memory, overflow_text))
         
-    # Every 50 messages, scan the summary for recurring jokes and permanent facts
+    # Execute macro pattern extraction at defined intervals
     if local_memory.total_message_count % 50 == 0 and local_memory.running_summary:
-        logger.info(f"Message 50 reached. Scanning summary for long-term patterns...")
+        logger.info(f"Interval threshold reached. Initiating macro pattern extraction.")
         asyncio.create_task(extract_recurring_patterns(server_id, local_memory.running_summary))
-    # ----------------------------------------------
     
     tag = await evaluate_cost_function(message, bot_user)
     
@@ -201,23 +198,24 @@ async def process_message(message, bot_user) -> str:
     context_block = local_memory.get_context_block()
     named_target_message = f"{message.author.display_name}: {message.content}"
     
-    # --- 2. THE LOCK REGISTRY ---
-    # Register the message we are about to answer and set the kill-switch to False
-    active_processing_locks[message.id] = False
+    # Concurrency Lock Registration
+    if tag in ["DIRECT_ENGAGEMENT", "QUOTED_ENGAGEMENT"]:
+        active_processing_locks[message.id] = "IMMUNE"
+    else:
+        active_processing_locks[message.id] = False
     
-    # Yield control to the event loop. This is where the rival bot has the chance to snipe us.
+    # Yield control to the asynchronous event loop during LLM generation
     response_data = await generate_chat_response(context_block, tag, named_target_message, server_id)
     
-    # We woke up! Check if the rival flipped our switch while we were thinking.
+    # Validate lock state post-generation
     if active_processing_locks.get(message.id) is True:
-        # Clean up the lock and silently abort the response
+        # Clean lock and abort response
         del active_processing_locks[message.id]
         return ""
         
-    # We survived the waiting period. Clean up the lock and proceed to fire.
+    # Clean lock and proceed with response execution
     if message.id in active_processing_locks:
         del active_processing_locks[message.id]
-    # ----------------------------
     
     reply_text = response_data.get("response", "").strip()
     reaction_emoji = response_data.get("reaction_emoji", "").strip()
@@ -226,13 +224,13 @@ async def process_message(message, bot_user) -> str:
         try:
             await message.add_reaction(reaction_emoji)
         except Exception as e:
-            logger.error(f"Discord API failed to add reaction '{reaction_emoji}': {e}")
+            logger.error(f"Discord API failure on add_reaction: {e}")
     
     if reply_text:
         try:
             await message.reply(reply_text)
             local_memory.add_message("Leepa", reply_text)
         except Exception as e:
-            logger.error(f"Discord API failed to reply: {e}")
+            logger.error(f"Discord API failure on message reply: {e}")
             
     return ""
