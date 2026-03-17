@@ -6,7 +6,7 @@ User Profile and Objectives
 The background is a first-year physics master student focusing on particle physics. Availability is six months of free time for a personal engineering journey. The primary goal is to build a highly conversational, context-aware, autonomous Discord chatbot that actively participates in discussions, shitposts, and organically reacts to the channel. The secondary feature is that the bot will eventually parse PDFs and images to autonomously return physics summaries.
 
 Core Architectural Features
-The host uses the Python discord library. The external AI engine offloads computational heavy lifting to a multi-model monolithic architecture supporting Gemini, Groq, DeepSeek, and OpenRouter via a master profile dictionary, maximizing free-tier token efficiency. Sensitive information like API keys and the developer Discord ID is secured in an environment file. The pipeline utilizes a multi-stage probability filter to route messages.
+The host uses the Python discord library and is deployed 24/7 on a Google Cloud Platform e2-micro Linux server using a systemd background daemon. The external AI engine offloads computational heavy lifting to a multi-model monolithic architecture supporting Gemini, Groq, DeepSeek, and OpenRouter via a master profile dictionary, maximizing free-tier token efficiency. Sensitive information like API keys and the developer Discord ID is secured in an environment file. The pipeline utilizes a multi-stage probability filter to route messages.
 
 Completed Phases
 
@@ -28,27 +28,24 @@ The bot utilizes a dependency-free, pure Python RAG pipeline. Using the gemini-e
 Phase 4 Physical Emoji Reactions and Native Thread Replies
 The JSON output schema was modified to decouple physical Discord API reactions from generated text, allowing the bot to autonomously drop emojis directly onto messages based on emotional context. The logic layer natively uses Discord's reply function to visually link conversations.
 
-Phase 4.5 The Infinite Loop Slayer
-The logic layer utilizes an asynchronous thread-climbing algorithm to physically fetch missing cache messages from the Discord API. This measures the exact ping-pong depth of an interaction with a specific target bot and forcefully kills the response pipeline to prevent infinite looping.
+Phase 4.5 The Infinite Loop Slayer and Interception Matrix
+The logic layer utilizes an asynchronous thread-climbing algorithm to physically fetch missing cache messages from the Discord API to forcefully kill infinite loops with other bots. It also features an Interception Matrix that listens to the event loop while generating a response; if a rival bot answers first, the bot aborts her response to prevent spam. Direct user pings grant an IMMUNE flag to bypass this lock.
 
 Phase 4.7 API Multiplexer and Resiliency
-The API handler utilizes a raw, asynchronous HTTP connection pool to bypass heavy SDKs. A master profile dictionary routes requests to OpenAI-compatible endpoints across various providers. Built-in regex sanitizers strip markdown hallucinations from open-source free models, and custom headers bypass OpenRouter's rate-limiting filters.
+The API handler utilizes a raw, asynchronous HTTP connection pool to bypass heavy SDKs. A master profile dictionary routes requests to OpenAI-compatible endpoints across various providers.
 
-Phase 4.8 Identity and Context Injection
-Discord's display_name property is explicitly prepended to the message payload and short-term memory queue, granting the LLM localized context on server-specific nicknames and user identities.
+Phase 4.8 Identity, Context Injection, and Persona Architecture
+Discord's display_name property is explicitly prepended to the message payload. The bot's core persona is structured using strict markdown headers to manage behavioral boundaries, preventing AI ego inflation while strictly enforcing formatting scarcity and conversation-building rules.
 
 Phase 4.9 Payload Prefix Caching
 The API assembly strictly isolates static directives from dynamic user history into separate system and user JSON roles. This exploits enterprise API VRAM caching, dropping input token costs for the bot's core brain to near zero.
 
-New Architectural Goal The Lightweight API Cloud
-To achieve 24/7 uptime for free without needing a paid GPU server, the bot will eventually be deployed to a free cloud hosting service as a lightweight router. It will continue to use external APIs to offload the heavy model computation.
+Phase 5 Cloud Deployment
+The bot was successfully migrated to a Google Cloud Platform e2-micro Ubuntu Linux instance. The Python environment is permanently managed by a systemd daemon, ensuring immortal 24/7 uptime independent of local hardware. Code updates are executed via GitHub synchronization.
 
 Pending Phases
 
-Phase 4.6 Generalized Bot Defense
-Transition the hardcoded target bot ID check in Phase 0 into a generalized heuristic that dynamically discourages or limits interactions with all Discord accounts flagged as bots to proactively prevent server spam.
-
-Phase 5 The Physics Vanity Plate
+Phase 5.5 The Physics Vanity Plate
 The bot will process uploaded documents by extracting text from PDFs and returning high-level physics summaries.
 
 END OF DOCUMENT

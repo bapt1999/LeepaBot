@@ -1,26 +1,29 @@
 # LeepaBot: The Dynamic Physics Chatbot
 
-LeepaBot is a conversational, context-aware Discord chatbot.
+LeepaBot is a conversational, context-aware Discord chatbot. The project was built by a first-year particle physics master student with six months of free time and a curiosity for vector mathematics and AI behavioral architecture.
 
-LeepaBot is designed to organically read the channel, match the ambient energy, and decide for itself if a response is needed. It operates on a multi-model architecture, routing requests through Gemini, Groq, DeepSeek, and OpenRouter, depending on user needs and token usage.
+The main idea is that chatbots usually just wait for commands and reply blindly. LeepaBot is designed to organically read the channel, match the ambient energy, and decide for itself if a response is even needed. It operates on a multi-model architecture, routing requests through various LLM providers to maximize API efficiency on free-tier infrastructure.
 
 ## The Architecture
 
-The backend is written in Python using discord.py. It offloads the computational heavy lifting to external APIs, keeping the bot lightweight enough to run as a cloud router. 
+The backend is written in Python using discord.py. It offloads the computational heavy lifting to external APIs, keeping the bot lightweight. The system is deployed on a Google Cloud Platform e2-micro Linux server, utilizing a systemd daemon to achieve permanent 24/7 uptime without relying on local hardware.
 
-One of the main features is the memory management. Instead of feeding the whole chat history to the LLM and being cost-heavy on tokens, the bot breathes. Every 25 messages, it compresses the overflow into a dense running summary in a background thread.
+One of the main features is the memory management. Instead of feeding the whole chat history to the LLM and burning tokens, the bot breathes. Every 25 messages, it compresses the overflow into a dense running summary in a background thread.
 
-For long-term memory, the bot uses a pure Python RAG pipeline. It calculates the vector embeddings of server lore using Gemini. When a new message comes in, it computes the dot product between the two vector embeddings to determine semantic closeness. It is an elegant solution that turns linguistics into pure geometry. There is also a dynamic half-life decay formula that slowly forgets unused lore over time to manage database size, while permanently locking in core memories.
+For long-term memory, the bot uses a pure Python RAG pipeline. It calculates the vector embeddings of server lore using Gemini. When a new message comes in, it computes the dot product between the vectors to find the angle and determine semantic closeness. There is also a dynamic half-life decay formula that slowly forgets unused lore over time to manage database size.
+
+To prevent chat spam, the bot features an Interception Matrix. If a rival bot answers a message while LeepaBot is still generating a response, the parallel thread flips a kill-switch and aborts the text generation. However, direct user pings grant an absolute immunity flag to bypass this lock.
+
+The bot's personality is managed through a strict markdown-hierarchical system prompt. By treating behavioral constraints as absolute laws rather than suggestions, the architecture prevents the AI from developing an inflated ego while strictly enforcing formatting rules and ensuring it builds upon conversations rather than repeating them.
 
 ## Setup Instructions
 
-To get the bot running locally, a few specific steps are required.
+To deploy the bot to a Linux server, clone the repository to the machine and install the required dependencies using `pip install -r requirements.txt` within a virtual environment. 
 
-First, clone the repository to the local machine. 
-Next, install the required dependencies using the command `pip install -r requirements.txt` in the terminal.
-Then, create a `.env` file in the root directory. This needs to include the Discord bot token, the developer's Discord ID, the rival bot ID to prevent infinite looping (if your server has a bot of its own, otherwise disregard), and the API keys for the various LLM providers. A Gemini API is required for embeddings retrieval, otherwise the bot only needs one API key to work through any of the four providers.
-Run the bot by executing main.py.
+A `.env` file must be manually created in the root directory to securely house the Discord bot token, the developer's Discord ID, the rival bot ID, and the API keys. 
+
+To achieve permanent uptime, create a systemd service file pointing to the Python executable and the `main.py` script. Enabling and starting this daemon allows the operating system to take custody of the bot, automatically restarting it in the event of a crash or server reboot. Future updates are handled by pushing code to GitHub and running a `git pull` on the server.
 
 ## Future Plans
 
-The architecture is stable, but Phase 5 is currently pending. This next step will give the bot the ability to parse multimodal attachments, specifically to read physics PDFs and return high-level summaries. The bot will eventually be cloud-hosted. This version is locally ran.
+The architecture is stable and fully deployed to the cloud. The next step will give the bot the ability to parse multimodal attachments, specifically to read physics PDFs and return high-level summaries.
