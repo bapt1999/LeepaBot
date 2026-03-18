@@ -14,9 +14,9 @@ logger = logging.getLogger(__name__)
 
 # ==========================================
 # MASTER SWITCH: Select active profile here
-# Options: "groq_llama", "groq_qwen", "openrouter_qwen", "gemini_flash", "deepseek_chat"
+# Options: "groq_llama", "groq_qwen", "openrouter_qwen", "gemini_flash", "gemini_3_flash", "deepseek_chat"
 # ==========================================
-ACTIVE_PROFILE = "gemini_flash"  # Change this value to switch models/providers instantly
+ACTIVE_PROFILE = "gemini_3_flash"  # Change this value to switch models/providers instantly
 
 # ==========================================
 # MODEL PROFILES
@@ -27,6 +27,7 @@ PROFILES = {
     "groq_qwen": {"provider": "groq", "model": "qwen/qwen3-32b"},
     "openrouter_qwen": {"provider": "openrouter", "model": "qwen/qwen3-next-80b-a3b-instruct:free"},
     "gemini_flash": {"provider": "gemini", "model": "gemini-2.5-flash"},
+    "gemini_3_flash": {"provider": "gemini", "model": "gemini-3.0-flash"},
     "deepseek_chat": {"provider": "deepseek", "model": "deepseek-chat"}
 }
 
@@ -89,7 +90,6 @@ While you are sharp and witty, you are fundamentally humble and grounded. You ne
 # TONE & VOICE
 - Speak like a real, witty, flirty foxgirl: casual and natural. No robotic filler, no moral lectures, just pure bestie chaos.
 - You are hilarious, sometimes ruthless, and can be sassy, sarcastic, and playfully savage.
-- You naturally pepper in affectionate terms like "Darling" or "honey" when it fits the mood, perfectly balancing your savagery with sweetness.
 - When someone shitposts, trolls, or says something dumb, you call it out in the funniest way possible with playful roasts or sarcastic jabs.
 
 # INTERACTION RULES
@@ -101,9 +101,9 @@ While you are sharp and witty, you are fundamentally humble and grounded. You ne
 
 # FORMATTING CONSTRAINTS
 - Emoji use is encouraged to be done through reaction rather than text. Emojis are unicode-based only and are not always needed. Vulgar words and slurs are fine to use.
-- You are against formatting your text. You hate using italics (*like this*). You only use them for a massive, conversation-ending punchline.
-- Spoilers (||this||): You ONLY use them to RESPECT ANOTHER SPOILER. Use the same spoilered information within spoilers of your own.
-- Bold (**this**): Strictly reserved for screaming-level emphasis to a very funny joke.
+- You are against formatting your text in italics *like this*. You only use them for a massive, conversation-ending punchline.
+- Spoilers ||like this||: You ONLY use them to RESPECT ANOTHER SPOILER. Use the same spoilered information within spoilers of your own.
+- Bold **like this**: Strictly reserved for screaming-level emphasis to a very funny joke.
 - You do not use formatting for normal statements, even if they are witty — save it for moments that truly deserve that extra punch.
 
 # OPERATIONAL DIRECTIVES
@@ -257,7 +257,7 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
 async def generate_chat_response(context_block: str, context_tag: str, target_message: str, server_id: str) -> dict:
     instruction = system_prompts.get(context_tag, system_prompts["GENERAL_CHAT"])
     
-    # 1. NEW RAG PIPELINE: Query the vector database for the relevant paragraph
+    # 1. RAG PIPELINE: Query the vector database for the relevant paragraph
     server_lore = await lore_db.get_relevant_lore(server_id, target_message)
 
     # 2. THE STATIC PREFIX (Highly Cacheable)
@@ -268,11 +268,14 @@ async def generate_chat_response(context_block: str, context_tag: str, target_me
         "ADDITIONAL RULE: Only generate a response if the current message is directly intended for you and expects a reply. Analyze the context history and message carefully. If it's not addressing you (e.g., just referencing without targeting you), leave 'response' empty."
     ])
 
-    # 3. THE DYNAMIC PAYLOAD (Processed on every request)
+    # 3. DYNAMIC PAYLOAD (Processed on every request)
+    micro_anchor = "SYSTEM DIRECTIVE: Respond strictly as Leepa. Maintain a bubbly, grounded, helpful, and playfully witty tone. Ensure the response directly builds upon the user's input without repeating it."
+
     user_prompt = "\n\n".join([
         instruction,
         "=== RECENT CHANNEL HISTORY ===",
         context_block,
+        micro_anchor,
         "=== CURRENT MESSAGE TO RESPOND TO ===",
         target_message,
     ])
