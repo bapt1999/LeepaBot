@@ -19,7 +19,11 @@ OTHER_BOT_REPLY_CAP = 1
 # Global dictionaries to track state across async operations.
 active_processing_locks = {}
 active_channel_memories = {}
-max_messages_in_memory = 20
+
+# ---------------------------------------------------------
+# LORE EXTRACTION KNOB
+# ---------------------------------------------------------
+LTM_EXTRACTION_INTERVAL = 50  # Number of messages before running a macro-extraction for long-term lore.
 
 # Pre-compiled regular expressions for identifying specific target users or names.
 REGEX_NAMED = re.compile(r'\b(leepa|leep)\b', re.IGNORECASE)
@@ -41,7 +45,7 @@ SHITPOST_KEYWORDS = ['lmao', 'lol', 'bruh', 'based', 'cringe', 'fr fr', 'no cap'
 def get_channel_memory(channel_id: int) -> ShortTermMemory:
     """Retrieves or instantiates an isolated memory queue for a specific Discord channel."""
     if channel_id not in active_channel_memories:
-        active_channel_memories[channel_id] = ShortTermMemory(max_size=max_messages_in_memory)  
+        active_channel_memories[channel_id] = ShortTermMemory()  
     return active_channel_memories[channel_id]
 
 
@@ -167,7 +171,8 @@ async def process_message(message, bot_user) -> str:
     if overflow_text:
         asyncio.create_task(background_summarize(local_memory, overflow_text))
         
-    if local_memory.total_message_count % 50 == 0 and local_memory.running_summary:
+    # Macro pattern extraction triggered using the newly exposed global tuning knob.
+    if local_memory.total_message_count % LTM_EXTRACTION_INTERVAL == 0 and local_memory.running_summary:
         asyncio.create_task(extract_recurring_patterns(server_id, local_memory.running_summary))
     
     combined_tag, should_trigger = await evaluate_message_context(message, bot_user)
