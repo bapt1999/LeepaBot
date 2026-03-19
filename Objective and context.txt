@@ -1,51 +1,70 @@
 START OF DOCUMENT
 
-REVISED PROJECT DOCUMENT The Dynamic Physics Chatbot LeepaBot
+REVISED PROJECT DOCUMENT: The Dynamic Conversational Chatbot LeepaBot
 
 User Profile and Objectives
-The background is a first-year physics master student focusing on particle physics. Availability is six months of free time for a personal engineering journey. The primary goal is to build a highly conversational, context-aware, autonomous Discord chatbot that actively participates in discussions, shitposts, and organically reacts to the channel. The secondary feature is that the bot will eventually parse PDFs and images to autonomously return physics summaries.
+The background is a personal engineering journey with six months of free time, driven by a curiosity for vector mathematics, RAG pipelines, and AI behavioral architecture.
+The primary goal is to build a highly conversational, context-aware, autonomous Discord chatbot that actively participates in discussions, shitposts, and organically reacts to the channel's vibe without needing direct command prompts.
+The secondary feature is that the bot will eventually parse multi-modal attachments (images and documents) to autonomously fold visual context into her ambient awareness.
 
 Core Architectural Features
-The host uses the Python discord library and is deployed 24/7 on a Google Cloud Platform e2-micro Linux server using a systemd background daemon. The external AI engine offloads computational heavy lifting to a multi-model monolithic architecture supporting Gemini, Groq, DeepSeek, and OpenRouter via a master profile dictionary, maximizing free-tier token efficiency. Sensitive information like API keys and the developer Discord ID is secured in an environment file. The pipeline utilizes a multi-stage probability filter to route messages.
+The host uses the Python discord library and is deployed 24/7 on a Google Cloud Platform e2-micro Linux server using a systemd background daemon.
+The external AI engine offloads computational heavy lifting to a multi-model monolithic architecture supporting Gemini, Groq, DeepSeek, and OpenRouter via a master profile dictionary, maximizing free-tier token efficiency.
+Sensitive information like API keys and the developer Discord ID is secured in an environment file.
+The pipeline utilizes a multi-stage parallel-track probability filter to organically route messages based on engagement levels and conversational classifications.
 
 Completed Phases
 
-Phase 1 and 2 Interface and Abstraction
+Phase 1 and 2: Interface and Abstraction
 The bot reliably connects to Discord and separates event handling from business logic.
 
-Phase 2.5 The Multi-State Router
-The bot utilizes a dynamic text routing architecture. Phase 1 is Guaranteed Engagement. Phase 2 is Conversational Hooks. Phase 3 is Chaos and Energy Matching. Phase 4 is The Ambient Vibe.
+Phase 2.5: The Multi-State Router
+The bot utilizes a dynamic text routing architecture. The engagement track handles Direct, Quoted, and Ambient mentions, while the classification track flags content as Standard, Shitpost, Yelling, Wall of Text, or Quick Banter to dynamically assemble LLM instructions.
 
-Phase 3A Short-Term Memory and Compartmentalization
-The bot maintains a strictly isolated RAM queue for unique Discord Channel IDs to prevent context bleeding. The LLM brain also dynamically isolates server lore using unique Guild IDs and asynchronous file reading.
+Phase 3A: Short-Term Memory and Compartmentalization
+The bot maintains a strictly isolated RAM queue for unique Discord Channel IDs to prevent context bleeding.
+The LLM brain also dynamically isolates server lore using unique Guild IDs and asynchronous file reading.
 
-Phase 3A.5 The Breathing Memory Queue
-The memory manager operates on a dynamic compression cycle. When the queue hits 25 messages, it slices the oldest 5 messages and fires them to the LLM via a non-blocking background thread. The LLM compresses these logs into a dense running summary, allowing the bot to retain permanent context without infinitely expanding the token payload.
+Phase 3A.5: The Breathing Memory Queue
+The memory manager operates on a dynamic compression cycle.
+When the queue hits 25 messages, it slices the oldest 5 messages and fires them to the LLM via a non-blocking background thread.
+The LLM compresses these logs into a dense running summary, allowing the bot to retain permanent context without infinitely expanding the token payload.
 
-Phase 3B Long-Term Memory and Semantic Lore Retrieval
-The bot utilizes a dependency-free, pure Python RAG pipeline. Using the gemini-embedding-001 model, it vectorizes server lore into RAM and uses cosine similarity to inject only mathematically relevant memories into the prompt. The storage architecture uses a structured JSON database to track memory metadata. Every 50 messages, a macro-extraction background task scans the running summary for new running jokes or patterns. To manage database size natively, the memory utilizes a dynamic half-life exponential decay formula based on hit counts, systematically purging unused lore every 5 commits while granting permanent VIP Core Memory status to high-value entries.
+Phase 3B: Long-Term Memory and Semantic Lore Retrieval
+The bot utilizes a dependency-free, pure Python RAG pipeline.
+Using the gemini-embedding-001 model, it vectorizes server lore into RAM and uses cosine similarity to inject only semantically relevant memories into the prompt.
+The storage architecture uses a structured JSON database to track memory metadata.
+Every 50 messages, a macro-extraction background task scans the running summary for new running jokes or patterns.
+To manage database size natively, the memory utilizes a dynamic half-life exponential decay formula based on hit counts, systematically purging unused lore every 5 commits while granting permanent VIP Core Memory status to high-value entries.
 
-Phase 4 Physical Emoji Reactions and Native Thread Replies
-The JSON output schema was modified to decouple physical Discord API reactions from generated text, allowing the bot to autonomously drop emojis directly onto messages based on emotional context. The logic layer natively uses Discord's reply function to visually link conversations.
+Phase 4: Physical Emoji Reactions and Native Thread Replies
+The JSON output schema was modified to decouple physical Discord API reactions from generated text, allowing the bot to autonomously drop emojis directly onto messages based on emotional context.
+The logic layer natively uses Discord's reply function to visually link conversations.
 
-Phase 4.5 The Infinite Loop Slayer and Interception Matrix
-The logic layer utilizes an asynchronous thread-climbing algorithm to physically fetch missing cache messages from the Discord API to forcefully kill infinite loops with other bots. It also features an Interception Matrix that listens to the event loop while generating a response; if a rival bot answers first, the bot aborts her response to prevent spam. Direct user pings grant an IMMUNE flag to bypass this lock.
+Phase 4.5: The Infinite Loop Slayer and Interception Matrix
+The logic layer utilizes an asynchronous thread-climbing algorithm to physically fetch missing cache messages from the Discord API to forcefully kill infinite loops with other bots.
+It also features an Interception Matrix that listens to the event loop while generating a response; if a rival bot answers first, the bot aborts her response to prevent spam. Direct user pings grant an IMMUNE flag to bypass this lock.
 
-Phase 4.7 API Multiplexer and Resiliency
-The API handler utilizes a raw, asynchronous HTTP connection pool to bypass heavy SDKs. A master profile dictionary routes requests to OpenAI-compatible endpoints across various providers.
+Phase 4.7: API Multiplexer and Resiliency
+The API handler utilizes a raw, asynchronous HTTP connection pool to bypass heavy SDKs.
+A master profile dictionary routes requests to OpenAI-compatible endpoints across various providers.
 
-Phase 4.8 Identity, Context Injection, and Persona Architecture
-Discord's display_name property is explicitly prepended to the message payload. The bot's core persona is structured using strict markdown headers to manage behavioral boundaries, preventing AI ego inflation while strictly enforcing formatting scarcity and conversation-building rules.
+Phase 4.8: Identity, Context Injection, and Persona Architecture
+Discord's display_name property is explicitly prepended to the message payload.
+The bot's core persona is anchored using strict markdown headers and N-shot examples to manage behavioral boundaries. This structure enforces a bubbly, slightly naive, but highly intelligent and playfully contrarian identity while strictly enforcing formatting and conversational expansion.
 
-Phase 4.9 Payload Prefix Caching
-The API assembly strictly isolates static directives from dynamic user history into separate system and user JSON roles. This exploits enterprise API VRAM caching, dropping input token costs for the bot's core brain to near zero.
+Phase 4.9: Payload Prefix Caching
+The API assembly strictly isolates static directives from dynamic user history into separate system and user JSON roles.
+This exploits enterprise API VRAM caching, dropping input token costs for the bot's core brain to near zero.
 
-Phase 5 Cloud Deployment
-The bot was successfully migrated to a Google Cloud Platform e2-micro Ubuntu Linux instance. The Python environment is permanently managed by a systemd daemon, ensuring immortal 24/7 uptime independent of local hardware. Code updates are executed via GitHub synchronization.
+Phase 5: Cloud Deployment
+The bot was successfully migrated to a Google Cloud Platform e2-micro Ubuntu Linux instance.
+The Python environment is permanently managed by a systemd daemon, ensuring immortal 24/7 uptime independent of local hardware.
+Code updates are executed via GitHub synchronization.
 
 Pending Phases
 
-Phase 5.5 The Physics Vanity Plate
-The bot will process uploaded documents by extracting text from PDFs and returning high-level physics summaries.
+Phase 5.5: Multi-Modal Context Integration
+The bot will process uploaded images and standard text documents to seamlessly fold visual and external data into her conversational awareness, eliminating the barrier between text and file sharing.
 
 END OF DOCUMENT

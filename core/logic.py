@@ -7,63 +7,51 @@ from dotenv import load_dotenv
 from core.api_handler import generate_chat_response, summarize_chat_logs, extract_recurring_patterns
 from core.memory_queue import ShortTermMemory
 
+# Initializes logging and loads environment variables from the .env file.
 logger = logging.getLogger(__name__)
-
-# Load environment variables
 load_dotenv()
-BAPT_DISCORD_ID = int(os.getenv('BAPT_DISCORD_ID', 0))
 
-# ==========================================
-# BOT CONCURRENCY & RATE LIMITING
-# ==========================================
+# Pulls necessary Discord IDs for logic gating.
+BAPT_DISCORD_ID = int(os.getenv('BAPT_DISCORD_ID', 0))
 OTHER_BOT_ID = int(os.getenv('OTHER_BOT_ID', 0)) 
 OTHER_BOT_REPLY_CAP = 1 
 
-# Global state for response interception
+# Global dictionaries to track state across async operations.
 active_processing_locks = {}
-
 active_channel_memories = {}
 max_messages_in_memory = 20
 
-# ==========================================
-# RESPONSE PROBABILITY MATRIX
-# ==========================================
-PROBABILITIES = {
-    "QUESTION": 0.30,
+# Pre-compiled regular expressions for identifying specific target users or names.
+REGEX_NAMED = re.compile(r'\b(leepa|leep)\b', re.IGNORECASE)
+REGEX_VIP = re.compile(r'\b(hun|sweetie)\b', re.IGNORECASE)
+
+# Baseline probabilities for the bot to organically inject itself into unaddressed conversations.
+AMBIENT_PROBABILITIES = {
     "QUICK_BANTER": 0.10,
-    "YELLING": 0.35,
-    "SHITPOST": 0.05,
-    "WALL_OF_TEXT": 0.08,
-    "CONSTRUCTIVE": 0.10,
-    "AMBIENT": 0.10
+    "YELLING": 0.20,
+    "SHITPOST": 0.15,
+    "WALL_OF_TEXT": 0.05,
+    "STANDARD": 0.05
 }
 
-# ==========================================
-# PRE-COMPILED REGEX PATTERNS & KEYWORDS
-# ==========================================
-REGEX_NAMED = re.compile(r'\b(leepa|leep)\b')
-REGEX_VIP = re.compile(r'\b(hun|sweetie)\b')
-REGEX_QUESTION = re.compile(r'^(who|what|where|when|why|how|por qué|cómo|pourquoi|comment)\b')
-
-PHYSICS_KEYWORDS = ['physics', 'física', 'physique', 'quantum', 'relativity', 'thermodynamics', 'mechanics', 'electromagnetism', 'optics', 'particle', 'astrophysics', 'cosmology', 'string theory', 'dark matter', 'dark energy', 'wavefunction', 'superposition', 'entanglement', 'uncertainty principle', 'schrodinger', 'newtonian', 'einstein', 'planck', 'bohr', 'heisenberg', 'de broglie', 'higgs', 'fermion', 'boson', 'lepton', 'quark', 'gluon', 'photon', 'graviton', 'atomic', 'semiconductor', 'condensed matter', 'fluid dynamics', 'statistical mechanics', 'string theory']
+# Lexicon array used for classifying chaotic conversational patterns.
 SHITPOST_KEYWORDS = ['lmao', 'lol', 'bruh', 'based', 'cringe', 'fr fr', 'no cap', 'skill issue', '💀', '🤡', 'cheh', '67']
 
 
 def get_channel_memory(channel_id: int) -> ShortTermMemory:
+    """Retrieves or instantiates an isolated memory queue for a specific Discord channel."""
     if channel_id not in active_channel_memories:
         active_channel_memories[channel_id] = ShortTermMemory(max_size=max_messages_in_memory)  
     return active_channel_memories[channel_id]
 
 
 async def get_reply_chain_depth(message, bot_user) -> int:
-    """Climbs the Discord reply tree backwards, fetching from API if cache fails."""
+    """Recursively walks back the Discord reply tree to prevent infinite loops between bots."""
     count = 0
     current_msg = message
     
     while current_msg.reference and current_msg.reference.message_id:
         parent_msg = current_msg.reference.resolved
-        
-        # Fallback to explicit API fetch if message is absent from local cache
         if parent_msg is None:
             try:
                 parent_msg = await current_msg.channel.fetch_message(current_msg.reference.message_id)
@@ -80,80 +68,74 @@ async def get_reply_chain_depth(message, bot_user) -> int:
     return count
 
 
-async def evaluate_cost_function(message, bot_user) -> str:
-    # Phase 0: Loop Prevention
+async def evaluate_message_context(message, bot_user) -> tuple[str, bool]:
+    """
+    Evaluates a message across two independent axes: Engagement Level and Conversational Vibe.
+    Returns a combined string tag and a boolean dictating whether to trigger the LLM.
+    """
+    # Infinite loop kill-switch for interacting with other bots.
     if message.author.id == OTHER_BOT_ID and OTHER_BOT_ID != 0:
         pingpong_depth = await get_reply_chain_depth(message, bot_user)
         if pingpong_depth >= (OTHER_BOT_REPLY_CAP * 2):
-            return "IGNORE"
+            return "IGNORE", False
 
     raw_content = message.content.strip()
     content_lower = raw_content.lower()
     word_count = len(raw_content.split())
     
-    # Identify target bot account for probability dampening
-    is_rival_bot = (message.author.id == OTHER_BOT_ID and OTHER_BOT_ID != 0)
-    
-    # Phase 1: Guaranteed Engagement overrides
-    is_mentioned = bot_user in message.mentions  
-    is_replied_to = message.reference and message.reference.resolved and message.reference.resolved.author == bot_user 
+    # ---------------------------------------------------------
+    # TRACK A: ENGAGEMENT DETECTION
+    # ---------------------------------------------------------
+    is_mentioned = bot_user in message.mentions
+    is_replied_to = message.reference and message.reference.resolved and message.reference.resolved.author == bot_user
     is_named = bool(REGEX_NAMED.search(content_lower))
-    is_creator_hun = (message.author.id == BAPT_DISCORD_ID) and bool(REGEX_VIP.search(content_lower))
+    is_creator_vip = (message.author.id == BAPT_DISCORD_ID) and bool(REGEX_VIP.search(content_lower))
     
-    if is_mentioned or is_named or is_creator_hun:
-        return "DIRECT_ENGAGEMENT"
+    engagement_level = "AMBIENT"
+    if is_mentioned or is_named or is_creator_vip:
+        engagement_level = "DIRECT"
+    elif is_replied_to:
+        engagement_level = "QUOTED"
+        
+    # ---------------------------------------------------------
+    # TRACK B: CLASSIFICATION ROUTING
+    # ---------------------------------------------------------
+    classification = "STANDARD"
     
-    if is_replied_to:
-        return "QUOTED_ENGAGEMENT"
-
-    if any(word in content_lower for word in PHYSICS_KEYWORDS):
-        return "PHYSICS_EXPLANATION"
-
-    # Phase 2: Conversational Hooks
-    is_question = bool(REGEX_QUESTION.search(content_lower)) or '?' in raw_content
+    # Ensures yelled text has enough alphabetic characters to count as genuine yelling.
+    is_yelling = raw_content.isupper() and len(re.sub(r'[^a-zA-Z]', '', raw_content)) > 5
+    is_shitpost = any(word in content_lower for word in SHITPOST_KEYWORDS)
     
-    if is_question:
-        prob = PROBABILITIES["QUESTION"] * (0.5 if is_rival_bot else 1.0)
-        if random.random() < prob: 
-            return "GENERAL_CHAT"
-
-    if 0 < word_count <= 5:
-        prob = PROBABILITIES["QUICK_BANTER"] * (0.5 if is_rival_bot else 1.0)
-        if random.random() < prob: 
-            return "QUICK_BANTER"
-
-    # Phase 3: Sentiment & Energy Matching
-    is_yelling = raw_content.isupper() and len(raw_content) > 5
+    if word_count > 100:
+        classification = "WALL_OF_TEXT"
+    elif is_yelling:
+        classification = "YELLING"
+    elif is_shitpost:
+        classification = "SHITPOST"
+    elif 0 < word_count <= 5:
+        classification = "QUICK_BANTER"
+        
+    # ---------------------------------------------------------
+    # PROBABILITY EXECUTION MATRIX
+    # ---------------------------------------------------------
+    is_rival_bot = (message.author.id == OTHER_BOT_ID and OTHER_BOT_ID != 0)
+    should_trigger = False
     
-    if is_yelling:
-        prob = PROBABILITIES["YELLING"] * (0.5 if is_rival_bot else 1.0)
-        if random.random() < prob: 
-            return "YELLING"
+    if engagement_level in ["DIRECT", "QUOTED"]:
+        should_trigger = True
+    else:
+        # Applies a 50% penalty to probability if the message originated from a rival bot.
+        base_prob = AMBIENT_PROBABILITIES.get(classification, 0.05)
+        final_prob = base_prob * (0.5 if is_rival_bot else 1.0)
+        if random.random() < final_prob:
+            should_trigger = True
             
-    if any(word in content_lower for word in SHITPOST_KEYWORDS):
-        prob = PROBABILITIES["SHITPOST"] * (0.5 if is_rival_bot else 1.0)
-        if random.random() < prob:
-            return "SHITPOST"
-
-    if word_count > 500:
-        prob_wall = PROBABILITIES["WALL_OF_TEXT"] * (0.5 if is_rival_bot else 1.0)
-        prob_construct = PROBABILITIES["CONSTRUCTIVE"] * (0.5 if is_rival_bot else 1.0)
-        
-        if random.random() < prob_wall: 
-            return "WALL_OF_TEXT" 
-        if random.random() < prob_construct: 
-            return "CONSTRUCTIVE_RESPONSE"
-
-    # Phase 4: Ambient Conversation
-    prob_ambient = PROBABILITIES["AMBIENT"] * (0.5 if is_rival_bot else 1.0)
-    if random.random() < prob_ambient: 
-        return "GENERAL_CHAT"
-        
-    return "IGNORE"
+    combined_tag = f"{engagement_level}_{classification}"
+    return combined_tag, should_trigger
 
 
 async def background_summarize(local_memory, extracted_text: str):
-    """Executes asynchronous memory compression without blocking the main event loop."""
+    """Offloads the dense memory compression task to a non-blocking background thread."""
     try:
         new_summary = await summarize_chat_logs(extracted_text, local_memory.running_summary)
         if new_summary:
@@ -165,12 +147,13 @@ async def background_summarize(local_memory, extracted_text: str):
         logger.error(f"Background memory compression failed: {e}")
         local_memory.is_summarizing = False
 
+
 async def process_message(message, bot_user) -> str:
-    # Interception Matrix: Detect concurrent bot responses
+    """Primary pipeline for handling incoming Discord events and routing them to the external AI API."""
+    # Interception Matrix logic prevents dual-bot spam by locking threads.
     if message.author.id == OTHER_BOT_ID and OTHER_BOT_ID != 0 and message.reference:
         target_id = message.reference.message_id
         if target_id in active_processing_locks:
-            # Verify lock immunity status before flagging for abortion
             if active_processing_locks[target_id] != "IMMUNE":
                 active_processing_locks[target_id] = True
                 logger.info(f"Concurrent response detected for message {target_id}. Aborting execution.")
@@ -180,40 +163,33 @@ async def process_message(message, bot_user) -> str:
     
     server_id = str(message.guild.id) if message.guild else "DM"
     
-    # Memory Pipeline Triggers
     overflow_text = local_memory.extract_overflow_for_summary()
     if overflow_text:
         asyncio.create_task(background_summarize(local_memory, overflow_text))
         
-    # Execute macro pattern extraction at defined intervals
     if local_memory.total_message_count % 50 == 0 and local_memory.running_summary:
-        logger.info(f"Interval threshold reached. Initiating macro pattern extraction.")
         asyncio.create_task(extract_recurring_patterns(server_id, local_memory.running_summary))
     
-    tag = await evaluate_cost_function(message, bot_user)
+    combined_tag, should_trigger = await evaluate_message_context(message, bot_user)
     
-    if tag == "IGNORE":
+    if not should_trigger:
         return ""
         
     context_block = local_memory.get_context_block()
     named_target_message = f"{message.author.display_name}: {message.content}"
     
-    # Concurrency Lock Registration
-    if tag in ["DIRECT_ENGAGEMENT", "QUOTED_ENGAGEMENT"]:
+    # Direct engagement automatically grants lock immunity.
+    if combined_tag.startswith("DIRECT") or combined_tag.startswith("QUOTED"):
         active_processing_locks[message.id] = "IMMUNE"
     else:
         active_processing_locks[message.id] = False
     
-    # Yield control to the asynchronous event loop during LLM generation
-    response_data = await generate_chat_response(context_block, tag, named_target_message, server_id)
+    response_data = await generate_chat_response(context_block, combined_tag, named_target_message, server_id)
     
-    # Validate lock state post-generation
     if active_processing_locks.get(message.id) is True:
-        # Clean lock and abort response
         del active_processing_locks[message.id]
         return ""
         
-    # Clean lock and proceed with response execution
     if message.id in active_processing_locks:
         del active_processing_locks[message.id]
     
