@@ -38,8 +38,7 @@ Every 50 messages, a macro-extraction background task scans the running summary 
 To manage database size natively, the memory utilizes a dynamic half-life exponential decay formula based on hit counts, systematically purging unused lore every 5 commits while granting permanent VIP Core Memory status to high-value entries.
 
 Phase 4: Physical Emoji Reactions and Native Thread Replies
-The JSON output schema was modified to decouple physical Discord API reactions from generated text, allowing the bot to autonomously drop emojis directly onto messages based on emotional context.
-The logic layer natively uses Discord's reply function to visually link conversations.
+The JSON output schema was modified to decouple physical Discord API reactions from generated text, allowing the bot to autonomously drop emojis directly onto messages based on emotional context. The system maps dynamic, per-server custom emoji dictionaries securely loaded from the environment variables. The logic layer natively uses Discord's reply function to visually link conversations.
 
 Phase 4.5: The Infinite Loop Slayer and Interception Matrix
 The logic layer utilizes an asynchronous thread-climbing algorithm to physically fetch missing cache messages from the Discord API to forcefully kill infinite loops with other bots.
@@ -49,9 +48,8 @@ Phase 4.7: API Multiplexer and Resiliency
 The API handler utilizes a raw, asynchronous HTTP connection pool to bypass heavy SDKs.
 A master profile dictionary routes requests to OpenAI-compatible endpoints across various providers.
 
-Phase 4.8: Identity, Context Injection, and Persona Architecture
-Discord's display_name property is explicitly prepended to the message payload.
-The bot's core persona is anchored using strict markdown headers and N-shot examples to manage behavioral boundaries. This structure enforces a bubbly, slightly naive, but highly intelligent and playfully contrarian identity while strictly enforcing formatting and conversational expansion.
+Phase 4.8: Cognitive Engine and Director/Actor Persona Architecture
+The bot utilizes a Chain of Thought prompting structure by separating its logic into a Director and an Actor. Before generating spoken dialogue, the LLM utilizes an internal thinking block to analyze user intent, conversational subtext, and social dynamics. Discord's display_name property is explicitly prepended to the message payload. The actor persona simulates a highly perceptive, casual, and multilingual (English, French, Spanish) entity that possesses flawless linguistic mastery but deliberately breaks grammar rules for stylistic and comedic effect. Multi-turn N-shot examples teach the bot to maintain conversational flow and push concepts forward rather than looping on previous punchlines.
 
 Phase 4.9: Payload Prefix Caching
 The API assembly strictly isolates static directives from dynamic user history into separate system and user JSON roles.
