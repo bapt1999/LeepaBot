@@ -128,9 +128,9 @@ async def evaluate_message_context(message, bot_user) -> tuple[str, bool]:
     if engagement_level in ["DIRECT", "QUOTED"]:
         should_trigger = True
     else:
-        # Applies a 50% penalty to probability if the message originated from a rival bot.
+        # Applies a 30% penalty to probability if the message originated from a rival bot.
         base_prob = AMBIENT_PROBABILITIES.get(classification, 0.05)
-        final_prob = base_prob * (0.5 if is_rival_bot else 1.0)
+        final_prob = base_prob * (0.3 if is_rival_bot else 1.0)
         if random.random() < final_prob:
             should_trigger = True
             

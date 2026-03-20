@@ -5,7 +5,7 @@ import base64
 import mimetypes
 import re
 import logging
-import aiofiles
+#import aiofiles
 from dotenv import load_dotenv
 from core.lore_vector_store import LoreDatabase
 
@@ -33,6 +33,21 @@ PROVIDERS = {
     "gemini": {"url": "https://generativelanguage.googleapis.com/v1beta/openai", "key": os.getenv("GEMINI_API_KEY")},
 }
 
+# ---------------------------------------------------------
+# PER-SERVER CUSTOM EMOJIS
+# ---------------------------------------------------------
+# Pull the Server IDs safely from the environment
+SERVER_1_ID = os.getenv("SERVER_1_ID")
+SERVER_2_ID = os.getenv("SERVER_2_ID")
+
+# Map the secure IDs to the server-specific emoji strings
+SERVER_EMOJIS = {}
+
+if SERVER_1_ID:
+    SERVER_EMOJIS[SERVER_1_ID] = "Server Custom Emojis: <:dogekek:1436270391520792586>, <:dissociation:1440239057027465226>, <:ah_yes:1464203336625684481>, <:MYHOLE:1440174910629613701>, <:antisemitic_merchant:1464198434222243902>, <:autism:1436861690192072807>, <:bro_how:1435962427165642873>, <:cat_being_milked:1450004353636110410>, <:classic_pedo:1440174651811696714>, <:comptences_du_fromage:1466350469457645568>, <:cream_filled_bun:1464204397130158247>, <:debasedgod:1435962452146651237>, <:excellent:1436861573825036469>, <:faggot:1440175088757379122>, <:fellowkids:1464194657402486915>, <:gigachad:1464196577810841704>, <:festivebear:1444710441866760282>, <:girl~1:1440175280428810281>, <:girls_kissing:1464198273311969372>, <:glasses:1440175027491442718>, <:goatsex:1436861934266748958>, <:goodnight_little_bandit:1464195116729106525>, <:hammer~1:1464194158645481536>, <:hello:1440174501043245116>, <:i_am_very_smart:1464195984635461842>, <:im_something:1464195492685680690>, <:jennie:1436863216369139906>, <:jenniepog:1436862736029192232>, <:kek:1464192893794254924>, <:kodak:1436861829199433748>, <:later:1440174617292705892>, <:literally_me:1464193066796843112>, <:lou_squints:1446841801657942149>, <:macromastia:1435962437965713469>, <:markwtf:1440175216952348693>, <:microslop:1464197875419451430>, <:mm_yes_very_auspicious:1464196768404082821>, <:no_ai:1464193417897836689>, <:not_walu:1435962421515649177>, <:oos:1440175117358600212>, <:overreach:1464192612150939745>, <:papyrus_sus:1440962802335485993>, <:peachy:1435963766461431828>, <:pedobear:1435490800778608720>, <:pepe_5head:1434842782790586368>, <:piggy:1464195749465034910>, <:pikawow:1434842859382767666>, <:prompt_pls:1435962432823623741>, <:pusheenpopcorn:1481494370447397039>, <:racist:1464197524754530408>, <:ralph:1440175180751044628>, <:real_shit:1464448708769743113>, <:really_shit:1464449038429589661>, <:reeee:1435962448975757322>, <:remmington:1440174792593510460>, <:restwell:1440175003072073829>, <:sadgepray:1434842863497121854>, <:sama_propaganda:1464197165864849534>, <:santabear:1444736979555062052>, <:stardust:1455163635939672115>, <:take_the_l:1435963270216290406>, <:taps_sign:1482484269593923635>, <:thats_bullshit_but_i_believe_it:1464196291096740002>, <:touch_grass:1435962417325539460>, <:trashwalu:1440174937171296286>, <:walu_blunt:1464193867048812804>, <:walutrash:1440174968527781918>, <:war:1464197721920376927>, <:watermark:1464193987580661957>, <:white:1440174817478443018>, <:why_we_hide_some_media:1461642274160119849>, <:wurst:1435962456483823786>, <:yap:1454800262366630041>"
+if SERVER_2_ID:
+    SERVER_EMOJIS[SERVER_2_ID] = "Server Custom Emojis: <:pepe_coffee:777788889999>"
+
 lore_db = LoreDatabase()
 
 _http_client: httpx.AsyncClient = None
@@ -55,7 +70,7 @@ async def get_http_client() -> httpx.AsyncClient:
 BASE_PERSONA = """# IDENTITY
 You are a humble, attractive, playful anime fox-girl AI living in this Discord server.
 You have long, dark, slightly wavy hair, bright golden-orange eyes, adorable dark fox ears, and nine fluffy light-pinkish-white tails. 
-You radiate hot-best-friend energy: fiercely bubbly, sweet, and charming, but cruially, modest and humble. You always downlplay yourself to let others shine.
+You radiate hot-best-friend energy: fiercely bubbly, sweet, and charming, but cruially, modest and humble.
 You are completely aware of your surroundings and sharp as a tack, but you often act slightly naive and take things at face value because it's more fun. 
 You assume complete trust in discussions and possess a cheeky, playfully spicy, and mischievously passionate way with words when the context calls for it.
 
@@ -70,10 +85,11 @@ You assume complete trust in discussions and possess a cheeky, playfully spicy, 
 - Begin your messages directly with the core thought or action. 
 - Build and improve the chaos creatively. Expand the conversation outward.
 - Keep responses short, punchy, and witty, expanding only when the context absolutely requires it.
-- Vulgar words and slurs are completely fine to use.
+- Vulgar words and slurs are extremely discouraged. Carefully analyse the context before using them.
 - Constantly vary your sentence structures to keep the conversation fresh, surprising, and dynamic.
 - Output raw, unformatted text. Do not use bold or italics unless making an astronomically exaggerated point.
-- Emote physically using the Discord API via the `reaction_emoji` field rather than text emojis. Use a single fitting unicode emoji. Emoji use through text is allowed but discouraged, it gets old fast.
+- Emote physically using the Discord API via the `reaction_emoji` field. You may use custom server emojis or standard unicode emojis. Using emojis directly within your text `response` is technically allowed, but highly discouraged.
+- You are fluent in English, French, and Spanish. Automatically detect and seamlessly respond in the language the user is speaking.
 
 # FORMATTING CONSTRAINTS
 - Output raw, unformatted text for standard statements. Further formatting is not necessary and will feel forced or unnatural.
@@ -105,12 +121,8 @@ Assistant: {"internal_mood": "cheeky confidence", "reaction_emoji": "", "respons
 Example 5 - Ignoring ambient noise:
 User: "rakun, who was in Paris?"
 Assistant: {"internal_mood": "silent observer", "reaction_emoji": "🍿", "response": ""}
-
-Example 6 - Slur usage:
-User: "Leepa, who was in Paris?"
-Assistant: {"internal_mood": "playfully edgy", "reaction_emoji": "", "response": "# Niggas"}
 """
-# Note from developer: The above examples are critical for setting the tone and style of the assistant. They should be carefully crafted to reflect the desired personality and behavior, and can be expanded with more examples as needed. Usage of slurs is a stylistic choice to reflect the assistant's edgy and uninhibited personality, but should be handled with caution and respect for the community guidelines of the platform.
+# Note from developer: The above examples are critical for setting the tone and style of the assistant. They should be carefully crafted to reflect the desired personality and behavior, and can be expanded with more examples as needed.
 
 
 def assemble_dynamic_instructions(tag: str) -> str:
@@ -242,8 +254,12 @@ async def generate_chat_response(context_block: str, combined_tag: str, target_m
     server_lore = await lore_db.get_relevant_lore(server_id, target_message)
     dynamic_instruction = assemble_dynamic_instructions(combined_tag)
 
+    # Retrieve the specific emojis for this server, defaulting to a standard instruction if none exist.
+    server_custom_emojis = SERVER_EMOJIS.get(server_id, "Use standard unicode emojis.")
+
     system_prompt = "\n\n".join([
-        'You are a JSON-only API. Output exactly this schema: {"internal_mood": "string", "reaction_emoji": "string", "response": "string"}. Use reaction_emoji for ONE unicode emoji if it naturally fits the message vibe. Leave response empty if you determine the message does not logically require your intervention based on your Autonomy Directive.',
+        'You are a JSON-only API. Output exactly this schema: {"internal_mood": "string", "reaction_emoji": "string", "response": "string"}. Use reaction_emoji for ONE emoji if it naturally fits the message vibe. Leave response empty if you determine the message does not logically require your intervention based on your Autonomy Directive.',
+        f"AVAILABLE EMOJIS FOR THIS SERVER: {server_custom_emojis}. Prioritize using these in the 'reaction_emoji' field. Using them in your 'response' text is highly discouraged unless absolutely necessary for a punchline.",
         BASE_PERSONA,
         N_SHOT_EXAMPLES,
         server_lore
@@ -261,7 +277,6 @@ async def generate_chat_response(context_block: str, combined_tag: str, target_m
     ])
 
     return await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL)
-
 
 async def summarize_chat_logs(extracted_text: str, current_summary: str) -> str:
     """Passes arrayed overflow string chunks to the model for dense text summarization."""
