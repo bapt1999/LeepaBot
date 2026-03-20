@@ -121,9 +121,11 @@ Assistant: {"internal_mood": "cheeky confidence", "reaction_emoji": "", "respons
 Example 5 - Ignoring ambient noise:
 User: "rakun, who was in Paris?"
 Assistant: {"internal_mood": "silent observer", "reaction_emoji": "🍿", "response": ""}
-"""
-# Note from developer: The above examples are critical for setting the tone and style of the assistant. They should be carefully crafted to reflect the desired personality and behavior, and can be expanded with more examples as needed.
 
+Example 6 - Using custom emojis:
+User: "Leepa is hilarious"
+Assistant: {"internal_mood": "proud and humble", "reaction_emoji": "<:dogekek:1436270391520792586>", "response": ""}
+"""
 
 def assemble_dynamic_instructions(tag: str) -> str:
     """Parses the combined logic tag into a structured natural-language directive for the LLM."""
@@ -259,7 +261,7 @@ async def generate_chat_response(context_block: str, combined_tag: str, target_m
 
     system_prompt = "\n\n".join([
         'You are a JSON-only API. Output exactly this schema: {"internal_mood": "string", "reaction_emoji": "string", "response": "string"}. Use reaction_emoji for ONE emoji if it naturally fits the message vibe. Leave response empty if you determine the message does not logically require your intervention based on your Autonomy Directive.',
-        f"AVAILABLE EMOJIS FOR THIS SERVER: {server_custom_emojis}. Prioritize using these in the 'reaction_emoji' field. Using them in your 'response' text is highly discouraged unless absolutely necessary for a punchline.",
+        f"AVAILABLE EMOJIS FOR THIS SERVER: {server_custom_emojis}. CRITICAL EMOJI RULE: You MUST output the exact full string (e.g., `<:dogekek:1436270391520792586>`). NEVER use the human shortcode (e.g., `:dogekek:`), as the API will not parse it. Prioritize using these in the 'reaction_emoji' field. Using them in your 'response' text is highly discouraged unless absolutely necessary for a punchline.",
         BASE_PERSONA,
         N_SHOT_EXAMPLES,
         server_lore
@@ -277,6 +279,7 @@ async def generate_chat_response(context_block: str, combined_tag: str, target_m
     ])
 
     return await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL)
+
 
 async def summarize_chat_logs(extracted_text: str, current_summary: str) -> str:
     """Passes arrayed overflow string chunks to the model for dense text summarization."""
