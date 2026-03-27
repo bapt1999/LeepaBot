@@ -1,4 +1,5 @@
 import asyncio
+import json
 import random
 import re
 import os
@@ -190,6 +191,7 @@ async def process_message(message, bot_user) -> str:
         active_processing_locks[message.id] = False
     
     response_data = await generate_chat_response(context_block, combined_tag, named_target_message, server_id)
+    logger.info(f"Raw JSON Output: {json.dumps(response_data, indent=2)}") # To see in the SSH the json output from the API
     
     if active_processing_locks.get(message.id) is True:
         del active_processing_locks[message.id]
