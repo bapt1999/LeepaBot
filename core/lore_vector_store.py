@@ -108,7 +108,7 @@ class LoreDatabase:
             self.server_vectors[safe_id] = []
 
     async def get_relevant_lore(self, server_id: str, user_query: str) -> str:
-        """Finds the most relevant memory and updates the hit counter/timestamp."""
+        """Finds all core memories and appends the single most relevant dynamic memory."""
         safe_id = "".join(c for c in server_id if c.isalnum() or c in ("_", "-"))
         
         if safe_id not in self.server_vectors:
@@ -118,29 +118,47 @@ class LoreDatabase:
         if not lore_data:
             return "No specific server lore established yet."
             
-        query_vector = await self.get_embedding(user_query)
-        if not query_vector:
-            return "No specific server lore established yet."
-            
+        core_block = []
         best_index = -1
         max_similarity = -1.0
         
+        query_vector = await self.get_embedding(user_query)
+        if not query_vector:
+            # If embedding fails, just return core memories if any exist
+            for item in lore_data:
+                if item.get("is_core"):
+                    core_block.append(f"- {item['text']}")
+            return "\n".join(core_block) if core_block else "No specific server lore established yet."
+            
+        # Filter logic: Grab all core lore, run similarity ONLY on dynamic lore
         for i, item in enumerate(lore_data):
-            sim = self.cosine_similarity(query_vector, item["vector"])
-            if sim > max_similarity:
-                max_similarity = sim
-                best_index = i
-                
-        # THE HIT TRIGGER
+            if item.get("is_core"):
+                core_block.append(f"- {item['text']}")
+            else:
+                sim = self.cosine_similarity(query_vector, item["vector"])
+                if sim > max_similarity:
+                    max_similarity = sim
+                    best_index = i
+                    
+        # THE HIT TRIGGER for dynamic memory
+        dynamic_hit = ""
         if max_similarity > 0.25 and best_index != -1:
             self.server_vectors[safe_id][best_index]["hits"] += 1
             self.server_vectors[safe_id][best_index]["last_accessed"] = int(time.time())
             
-            # Save the updated hit counter in the background
             await self._save_json(safe_id)
-            return f"RELEVANT SERVER LORE:\n{self.server_vectors[safe_id][best_index]['text']}"
+            dynamic_hit = f"\nRELEVANT RECENT LORE:\n- {self.server_vectors[safe_id][best_index]['text']}"
             
-        return "No specific server lore established yet."
+        # Concatenate the core block and the single dynamic hit
+        final_lore = []
+        if core_block:
+            final_lore.append("PERMANENT CORE LORE:")
+            final_lore.extend(core_block)
+            
+        if dynamic_hit:
+            final_lore.append(dynamic_hit)
+            
+        return "\n".join(final_lore).strip() if final_lore else "No specific server lore established yet."
 
     async def add_dynamic_lore(self, server_id: str, new_facts: list):
         """Appends new facts and triggers the batch decay purge every 5 commits."""
@@ -183,20 +201,20 @@ class LoreDatabase:
         current_time = int(time.time())
         survivors = []
         
-        # lambda_0 is tuned so 1 hit reaches a score of 0.1 in 7 days
-        lambda_0 = 0.0000038 
+        # lambda_0 is tuned so 1 hit reaches a score of 0.1 in roughly 24 hours (86400 seconds)
+        lambda_0 = 0.0000266 
 
         for item in self.server_vectors.get(safe_id, []):
             # CORE OVERRIDE: 10 hits makes the memory immortal
-            if item["hits"] >= 10:
+            if item.get("hits", 0) >= 10:
                 item["is_core"] = True
 
-            if item["is_core"]:
+            if item.get("is_core"):
                 survivors.append(item)
                 continue
 
-            hits = max(1, item["hits"])
-            delta_t = current_time - item["last_accessed"]
+            hits = max(1, item.get("hits", 1))
+            delta_t = current_time - item.get("last_accessed", current_time)
 
             # R = H * e^(-(lambda_0 / H) * delta_t)
             R = hits * math.exp(-(lambda_0 / hits) * delta_t)

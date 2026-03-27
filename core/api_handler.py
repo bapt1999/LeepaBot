@@ -358,9 +358,11 @@ async def extract_recurring_patterns(server_id: str, current_summary: str):
     system_prompt = (
         'You are a JSON-only data extraction AI. Output EXACTLY this schema: '
         '{"extracted_lore": ["string", "string"]}. '
-        'Analyze the provided long-term chat summary and extract 0 to 3 PERMANENT, recurring patterns, '
-        'running jokes, or established server lore. Ignore one-off comments. '
-        'Only extract a fact if it appears to be a consistent behavioral pattern or established history. '
+        'Analyze the provided long-term chat summary and extract 0 to 3 PERMANENT running jokes, '
+        'or established server lore. Ignore one-off comments. '
+        'CRITICAL FIREWALL: You are strictly forbidden from recording Leepa\'s behavior, personality, or actions. '
+        'You may ONLY record user behavior, user quotes, and mutual running jokes. '
+        'Format all extracted facts purely as third-person comedic observations or playful banter (e.g. "[Running Joke] The users believe...", "[Lore] Bapt is known for..."). '
         'If no genuine patterns exist yet, leave the array empty.'
     )
     
