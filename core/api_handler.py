@@ -7,6 +7,7 @@ import re
 import logging
 from dotenv import load_dotenv
 from core.lore_vector_store import LoreDatabase
+import random
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -271,6 +272,9 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
         headers["HTTP-Referer"] = "https://github.com/physics_bot" 
         headers["X-Title"] = "LeepaBot"
 
+    # Introduce a small random temperature variation to add dynamic unpredictability to responses, while keeping it within a generally coherent range.
+    dynamic_temp = round(random.uniform(0.8, 1.2), 2)
+
     payload = {
         "model": model,
         "messages": [
@@ -278,6 +282,7 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
             {"role": "user", "content": user_prompt}
         ],
         "response_format": {"type": "json_object"},
+        "temperature": dynamic_temp
     }
 
     client = await get_http_client()
