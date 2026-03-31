@@ -34,6 +34,19 @@ PROVIDERS = {
 }
 
 # ---------------------------------------------------------
+# TEMPERATURE: TUNING MATRIX (0.0 to 1.0 Normalized Scale)
+# ---------------------------------------------------------
+# Adjust these tuples to globally alter Leepa's creativity for specific contexts.
+THERMAL_BOUNDARIES = {
+    "SHITPOST": (0.85, 1.0),
+    "YELLING": (0.8, 0.95),
+    "QUICK_BANTER": (0.75, 0.9),
+    "WALL_OF_TEXT": (0.6, 0.8),
+    "PHYSICS": (0.1, 0.3),
+    "STANDARD": (0.7, 0.85) 
+}
+
+# ---------------------------------------------------------
 # PER-SERVER CUSTOM EMOJIS
 # ---------------------------------------------------------
 SERVER_1_ID = os.getenv("SERVER_1_ID")
@@ -205,24 +218,25 @@ def assemble_dynamic_instructions(tag: str) -> str:
         
     return "CONTEXT DIRECTIVE:\n- " + "\n- ".join(directives)
 
-def get_chaos_index(tag: str) -> float:
+def calculate_thermal_scalar(tag: str) -> float:
     """
-    Translates the conversational vibe into a normalized Chaos Index (0.0 to 1.0).
-    Adds a slight random jitter to prevent responses from feeling mechanically identical.
+    Translates the conversational vibe into a normalized thermal scalar (0.0 to 1.0).
+    Applies a slight random variance based on predefined boundaries.
     """
     if "SHITPOST" in tag:
-        return random.uniform(0.8, 1.0)
+        bounds = THERMAL_BOUNDARIES["SHITPOST"]
     elif "YELLING" in tag:
-        return random.uniform(0.7, 0.9)
+        bounds = THERMAL_BOUNDARIES["YELLING"]
     elif "QUICK_BANTER" in tag:
-        return random.uniform(0.6, 0.8)
+        bounds = THERMAL_BOUNDARIES["QUICK_BANTER"]
     elif "WALL_OF_TEXT" in tag:
-        return random.uniform(0.5, 0.7)
+        bounds = THERMAL_BOUNDARIES["WALL_OF_TEXT"]
     elif "PHYSICS" in tag:
-        return random.uniform(0.1, 0.3)
+        bounds = THERMAL_BOUNDARIES["PHYSICS"]
     else:
-        # STANDARD or fallback
-        return random.uniform(0.4, 0.6)
+        bounds = THERMAL_BOUNDARIES["STANDARD"]
+        
+    return random.uniform(bounds[0], bounds[1])
 
 def prepare_attachment(file_path: str) -> dict | None:
     """Encodes standard file attachments for multi-modal processing support."""
@@ -272,7 +286,7 @@ def handle_error_response(error: dict) -> dict:
     return {"response": "", "reaction_emoji": "", "internal_mood": finish_reason}
 
 
-async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, model: str, chaos_index: float = 0.5) -> dict:
+async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, model: str, thermal_scalar: float = 0.5) -> dict:
     """Executes the raw HTTP post request, splitting logic for native Gemini vs standard OpenAI endpoints."""
     provider = PROVIDERS.get(provider_key)
     if not provider or not provider.get("key"):
@@ -285,7 +299,7 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
     # NATIVE GEMINI ROUTING (Unlocks thinking_config and extreme temps)
     # ---------------------------------------------------------
     if provider_key == "gemini":
-        final_temp = round(chaos_index * 1.8, 2)
+        final_temp = round(thermal_scalar * 1.8, 2)
         endpoint = f"{provider['url']}/{model}:generateContent?key={provider['key']}"
         headers = {"Content-Type": "application/json"}
         
@@ -320,7 +334,7 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
     # STANDARD OPENAI COMPATIBILITY ROUTING (Groq, DeepSeek, OpenRouter)
     # ---------------------------------------------------------
     else:
-        final_temp = round(chaos_index * 0.9, 2)
+        final_temp = round(thermal_scalar * 0.9, 2)
         endpoint = f"{provider['url']}/chat/completions"
         headers = {
             "Authorization": f"Bearer {provider['key']}",
@@ -366,7 +380,7 @@ async def generate_chat_response(context_block: str, combined_tag: str, target_m
     """Assembles the final text payload by aggregating identity, lore, N-shots, and history blocks."""
     server_lore = await lore_db.get_relevant_lore(server_id, target_message)
     dynamic_instruction = assemble_dynamic_instructions(combined_tag)
-    current_chaos = get_chaos_index(combined_tag)
+    current_thermal = calculate_thermal_scalar(combined_tag)
 
     # Retrieve the specific emojis for this server, defaulting to a standard instruction if none exist.
     server_custom_emojis = SERVER_EMOJIS.get(server_id, "Use standard unicode emojis.")
@@ -390,7 +404,7 @@ async def generate_chat_response(context_block: str, combined_tag: str, target_m
         target_message,
     ])
 
-    return await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL, chaos_index=current_chaos)
+    return await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL, thermal_scalar=current_thermal)
 
 
 async def summarize_chat_logs(extracted_text: str, current_summary: str) -> str:
@@ -406,8 +420,8 @@ async def summarize_chat_logs(extracted_text: str, current_summary: str) -> str:
     user_prompt = f"PREVIOUS SUMMARY:\n{current_summary}\n\nNEW LOGS TO COMPRESS:\n{extracted_text}" if current_summary else f"NEW LOGS TO COMPRESS:\n{extracted_text}"
     
     try:
-        # We pass a hardcoded low chaos_index to ensure the background task remains sterile and analytical
-        result = await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL, chaos_index=0.1)
+        # We pass a hardcoded low thermal_scalar to ensure the background task remains sterile and analytical
+        result = await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL, thermal_scalar=0.1)
         return result.get("response", "").strip()
     except Exception as e:
         logger.error(f"Failed to generate summary: {e}")
@@ -430,8 +444,8 @@ async def extract_recurring_patterns(server_id: str, current_summary: str):
     user_prompt = f"LONG-TERM CHAT SUMMARY:\n{current_summary}"
     
     try:
-        # We pass a hardcoded low chaos_index to ensure the background task remains sterile and analytical
-        result = await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL, chaos_index=0.1)
+        # We pass a hardcoded low thermal_scalar to ensure the background task remains sterile and analytical
+        result = await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL, thermal_scalar=0.1)
         new_patterns = result.get("extracted_lore", [])
         
         if new_patterns:
