@@ -34,51 +34,6 @@ PROVIDERS = {
 }
 
 # ---------------------------------------------------------
-# THERMAL CEILINGS & STRICT SCHEMAS (Solution A)
-# ---------------------------------------------------------
-PROVIDER_THERMAL_CEILINGS = {
-    "gemini": 2.0,
-    "groq": 1.2,
-    "openrouter": 1.5,
-    "deepseek": 1.3
-}
-
-CHAT_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "thinking_block": {"type": "string"},
-        "internal_mood": {"type": "string"},
-        "reaction_emoji": {"type": "string"},
-        "response": {"type": "string"}
-    },
-    "required": ["thinking_block", "internal_mood", "reaction_emoji", "response"],
-    "additionalProperties": False
-}
-
-SUMMARY_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "internal_mood": {"type": "string"},
-        "reaction_emoji": {"type": "string"},
-        "response": {"type": "string"}
-    },
-    "required": ["internal_mood", "reaction_emoji", "response"],
-    "additionalProperties": False
-}
-
-EXTRACTION_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "extracted_lore": {
-            "type": "array",
-            "items": {"type": "string"}
-        }
-    },
-    "required": ["extracted_lore"],
-    "additionalProperties": False
-}
-
-# ---------------------------------------------------------
 # PER-SERVER CUSTOM EMOJIS
 # ---------------------------------------------------------
 SERVER_1_ID = os.getenv("SERVER_1_ID")
@@ -250,6 +205,24 @@ def assemble_dynamic_instructions(tag: str) -> str:
         
     return "CONTEXT DIRECTIVE:\n- " + "\n- ".join(directives)
 
+def get_chaos_index(tag: str) -> float:
+    """
+    Translates the conversational vibe into a normalized Chaos Index (0.0 to 1.0).
+    Adds a slight random jitter to prevent responses from feeling mechanically identical.
+    """
+    if "SHITPOST" in tag:
+        return random.uniform(0.8, 1.0)
+    elif "YELLING" in tag:
+        return random.uniform(0.7, 0.9)
+    elif "QUICK_BANTER" in tag:
+        return random.uniform(0.6, 0.8)
+    elif "WALL_OF_TEXT" in tag:
+        return random.uniform(0.5, 0.7)
+    elif "PHYSICS" in tag:
+        return random.uniform(0.1, 0.3)
+    else:
+        # STANDARD or fallback
+        return random.uniform(0.4, 0.6)
 
 def prepare_attachment(file_path: str) -> dict | None:
     """Encodes standard file attachments for multi-modal processing support."""
@@ -299,8 +272,8 @@ def handle_error_response(error: dict) -> dict:
     return {"response": "", "reaction_emoji": "", "internal_mood": finish_reason}
 
 
-async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, model: str, response_schema: dict = None, chaos_index: float = 0.5) -> dict:
-    """Executes the raw HTTP post request to the specified LLM routing provider."""
+async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, model: str, chaos_index: float = 0.5) -> dict:
+    """Executes the raw HTTP post request to the specified LLM routing provider, using the translated chaos matrix."""
     provider = PROVIDERS.get(provider_key)
     if not provider or not provider.get("key"):
         logger.error(f"Provider '{provider_key}' is not configured or missing API key.")
@@ -315,9 +288,14 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
         headers["HTTP-Referer"] = "https://github.com/physics_bot" 
         headers["X-Title"] = "LeepaBot"
 
-    # Scale the chaos index securely based on the specific provider's limits.
-    ceiling = PROVIDER_THERMAL_CEILINGS.get(provider_key, 1.0)
-    actual_temp = round(chaos_index * ceiling, 2)
+    # THE PROVIDER MATRIX
+    # Safely maps the internal 0.0-1.0 index to the provider's specific acceptable limits.
+    if provider_key == "gemini":
+        # Gemini handles higher temps well, scaling up to 2.0. We cap at 1.8 to preserve the JSON schema.
+        final_temp = round(chaos_index * 1.8, 2)
+    else:
+        # Standard OpenAI-compatible endpoints scale to 1.0. We cap at 0.9 to prevent JSON breakage.
+        final_temp = round(chaos_index * 0.9, 2)
 
     payload = {
         "model": model,
@@ -325,24 +303,9 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        "temperature": actual_temp,
-        "top_p": 0.95,
-        "frequency_penalty": 0.4 # A moderate penalty to prevent repeating sentence structures
+        "response_format": {"type": "json_object"},
+        "temperature": final_temp
     }
-
-    # Apply the strict JSON Schema, enforcing structure at the engine level.
-    if response_schema:
-        payload["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "structured_output",
-                "strict": True,
-                "schema": response_schema
-            }
-        }
-    else:
-        # Fallback if no specific schema is requested
-        payload["response_format"] = {"type": "json_object"}
 
     client = await get_http_client()
     endpoint = f"{provider['url']}/chat/completions"
@@ -372,27 +335,13 @@ async def generate_chat_response(context_block: str, combined_tag: str, target_m
     """Assembles the final text payload by aggregating identity, lore, N-shots, and history blocks."""
     server_lore = await lore_db.get_relevant_lore(server_id, target_message)
     dynamic_instruction = assemble_dynamic_instructions(combined_tag)
-
-    # ---------------------------------------------------------
-    # CONTEXT-AWARE THERMAL ROUTING
-    # ---------------------------------------------------------
-    # Extract the conversational vibe and lock the chaos_index into specific ranges
-    vibe = combined_tag.split('_')[1] if '_' in combined_tag else "STANDARD"
-    
-    if vibe in ["PHYSICS_EXPLANATION", "CONSTRUCTIVE_RESPONSE"]:
-        chaos_index = round(random.uniform(0.1, 0.3), 2)  # Cold, analytical, safe
-    elif vibe in ["SHITPOST", "YELLING"]:
-        chaos_index = round(random.uniform(0.85, 1.0), 2) # Maximum acceptable chaos
-    elif vibe == "QUICK_BANTER":
-        chaos_index = round(random.uniform(0.7, 0.9), 2)  # Highly creative, fast-paced
-    else:
-        chaos_index = round(random.uniform(0.4, 0.7), 2)  # The standard conversational wobble
+    current_chaos = get_chaos_index(combined_tag)
 
     # Retrieve the specific emojis for this server, defaulting to a standard instruction if none exist.
     server_custom_emojis = SERVER_EMOJIS.get(server_id, "Use standard unicode emojis.")
 
     system_prompt = "\n\n".join([
-        'You are outputting strictly to a programmatic JSON schema. Use reaction_emoji for ONE emoji if it naturally fits the message vibe. Leave response empty if you determine the message does not logically require your intervention based on your Autonomy Directive.',
+        'You are a JSON-only API. Output exactly this schema: {"thinking_block": "string", "internal_mood": "string", "reaction_emoji": "string", "response": "string"}. Keep the thinking_block as a single, plain-text string without line breaks or double quotes to prevent JSON parsing errors. Use reaction_emoji for ONE emoji if it naturally fits the message vibe. Leave response empty if you determine the message does not logically require your intervention based on your Autonomy Directive.',
         f"AVAILABLE EMOJIS FOR THIS SERVER: {server_custom_emojis}. CRITICAL EMOJI RULE: You MUST output the exact full string (e.g., `<:dogekek:1436270391520792586>`). NEVER use the human shortcode (e.g., `:dogekek:`), as the API will not parse it. Prioritize using these in the 'reaction_emoji' field. Using them in your 'response' text is highly discouraged unless absolutely necessary for a punchline.",
         BASE_PERSONA,
         N_SHOT_EXAMPLES,
@@ -410,20 +359,14 @@ async def generate_chat_response(context_block: str, combined_tag: str, target_m
         target_message,
     ])
 
-    return await call_llm(
-        system_prompt=system_prompt, 
-        user_prompt=user_prompt, 
-        provider_key=ACTIVE_PROVIDER, 
-        model=ACTIVE_MODEL,
-        response_schema=CHAT_SCHEMA,
-        chaos_index=chaos_index
-    )
+    return await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL, chaos_index=current_chaos)
 
 
 async def summarize_chat_logs(extracted_text: str, current_summary: str) -> str:
     """Passes arrayed overflow string chunks to the model for dense text summarization."""
     system_prompt = (
-        'You are compressing data to a strictly enforced JSON schema. '
+        'You are a JSON-only data compression AI. Output EXACTLY this schema: '
+        '{"internal_mood": "string", "reaction_emoji": "string", "response": "string"}. '
         'In the "response" field, write a dense 2-3 sentence summary of the provided chat logs, '
         'merging it with any previous summary. Keep it strictly factual and concise. '
         'Leave reaction_emoji empty.'
@@ -432,14 +375,8 @@ async def summarize_chat_logs(extracted_text: str, current_summary: str) -> str:
     user_prompt = f"PREVIOUS SUMMARY:\n{current_summary}\n\nNEW LOGS TO COMPRESS:\n{extracted_text}" if current_summary else f"NEW LOGS TO COMPRESS:\n{extracted_text}"
     
     try:
-        result = await call_llm(
-            system_prompt=system_prompt, 
-            user_prompt=user_prompt, 
-            provider_key=ACTIVE_PROVIDER, 
-            model=ACTIVE_MODEL,
-            response_schema=SUMMARY_SCHEMA,
-            chaos_index=0.1 # Very cold temperature required for analytical consistency
-        )
+        # We pass a hardcoded low chaos_index to ensure the background task remains sterile and analytical
+        result = await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL, chaos_index=0.1)
         return result.get("response", "").strip()
     except Exception as e:
         logger.error(f"Failed to generate summary: {e}")
@@ -449,7 +386,8 @@ async def summarize_chat_logs(extracted_text: str, current_summary: str) -> str:
 async def extract_recurring_patterns(server_id: str, current_summary: str):
     """Parses long-term memory blobs to extract highly permanent data structures into the database."""
     system_prompt = (
-        'You are extracting data to a strictly enforced JSON schema array. '
+        'You are a JSON-only data extraction AI. Output EXACTLY this schema: '
+        '{"extracted_lore": ["string", "string"]}. '
         'Analyze the provided long-term chat summary and extract 0 to 3 PERMANENT running jokes, '
         'or established server lore. Ignore one-off comments. '
         'CRITICAL FIREWALL: You are strictly forbidden from recording Leepa\'s behavior, personality, or actions. '
@@ -461,14 +399,8 @@ async def extract_recurring_patterns(server_id: str, current_summary: str):
     user_prompt = f"LONG-TERM CHAT SUMMARY:\n{current_summary}"
     
     try:
-        result = await call_llm(
-            system_prompt=system_prompt, 
-            user_prompt=user_prompt, 
-            provider_key=ACTIVE_PROVIDER, 
-            model=ACTIVE_MODEL,
-            response_schema=EXTRACTION_SCHEMA,
-            chaos_index=0.1 # Very cold temperature required for consistent data extraction
-        )
+        # We pass a hardcoded low chaos_index to ensure the background task remains sterile and analytical
+        result = await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL, chaos_index=0.1)
         new_patterns = result.get("extracted_lore", [])
         
         if new_patterns:
