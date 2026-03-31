@@ -30,7 +30,7 @@ PROVIDERS = {
     "groq": {"url": "https://api.groq.com/openai/v1", "key": os.getenv("GROQ_API_KEY")},
     "deepseek": {"url": "https://api.deepseek.com/v1", "key": os.getenv("DEEPSEEK_API_KEY")},
     "openrouter": {"url": "https://openrouter.ai/api/v1", "key": os.getenv("OPENROUTER_API_KEY")},
-    "gemini": {"url": "https://generativelanguage.googleapis.com/v1beta/openai", "key": os.getenv("GEMINI_API_KEY")},
+    "gemini": {"url": "https://generativelanguage.googleapis.com/v1beta/models", "key": os.getenv("GEMINI_API_KEY")},
 }
 
 # ---------------------------------------------------------
@@ -273,62 +273,93 @@ def handle_error_response(error: dict) -> dict:
 
 
 async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, model: str, chaos_index: float = 0.5) -> dict:
-    """Executes the raw HTTP post request to the specified LLM routing provider, using the translated chaos matrix."""
+    """Executes the raw HTTP post request, splitting logic for native Gemini vs standard OpenAI endpoints."""
     provider = PROVIDERS.get(provider_key)
     if not provider or not provider.get("key"):
         logger.error(f"Provider '{provider_key}' is not configured or missing API key.")
         return {"response": f"Error: Provider '{provider_key}' unavailable.", "reaction_emoji": ""}
 
-    headers = {
-        "Authorization": f"Bearer {provider['key']}",
-        "Content-Type": "application/json",
-    }
-    
-    if provider_key == "openrouter":
-        headers["HTTP-Referer"] = "https://github.com/physics_bot" 
-        headers["X-Title"] = "LeepaBot"
-
-    # THE PROVIDER MATRIX
-    # Safely maps the internal 0.0-1.0 index to the provider's specific acceptable limits.
-    if provider_key == "gemini":
-        # Gemini handles higher temps well, scaling up to 2.0. We cap at 1.8 to preserve the JSON schema.
-        final_temp = round(chaos_index * 1.8, 2)
-    else:
-        # Standard OpenAI-compatible endpoints scale to 1.0. We cap at 0.9 to prevent JSON breakage.
-        final_temp = round(chaos_index * 0.9, 2)
-
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "response_format": {"type": "json_object"},
-        "temperature": final_temp
-    }
-
     client = await get_http_client()
-    endpoint = f"{provider['url']}/chat/completions"
 
-    try:
-        response = await client.post(endpoint, headers=headers, json=payload)
-        result = response.json()
+    # ---------------------------------------------------------
+    # NATIVE GEMINI ROUTING (Unlocks thinking_config and extreme temps)
+    # ---------------------------------------------------------
+    if provider_key == "gemini":
+        final_temp = round(chaos_index * 1.8, 2)
+        endpoint = f"{provider['url']}/{model}:generateContent?key={provider['key']}"
+        headers = {"Content-Type": "application/json"}
+        
+        payload = {
+            "systemInstruction": {"parts": [{"text": system_prompt}]},
+            "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+            "generationConfig": {
+                "temperature": final_temp,
+                "responseMimeType": "application/json",
+                "thinkingConfig": {"thinkingLevel": "HIGH"} # Applying the high thinking level natively
+            }
+        }
+        
+        try:
+            response = await client.post(endpoint, headers=headers, json=payload)
+            result = response.json()
+            
+            if "error" in result:
+                return handle_error_response(result["error"])
+                
+            # Extracting the output from the native Gemini response tree
+            content = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+            content = re.sub(r"^```json\s*", "", content, flags=re.IGNORECASE)
+            content = re.sub(r"\s*```$", "", content)
+            return json.loads(content)
+            
+        except Exception as e:
+            logger.error(f"Gemini Native Error [{model}]: {e}")
+            return {"response": "", "reaction_emoji": "", "internal_mood": "error"}
 
-        if "error" in result:
-            return handle_error_response(result["error"])
+    # ---------------------------------------------------------
+    # STANDARD OPENAI COMPATIBILITY ROUTING (Groq, DeepSeek, OpenRouter)
+    # ---------------------------------------------------------
+    else:
+        final_temp = round(chaos_index * 0.9, 2)
+        endpoint = f"{provider['url']}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {provider['key']}",
+            "Content-Type": "application/json",
+        }
+        
+        if provider_key == "openrouter":
+            headers["HTTP-Referer"] = "https://github.com/physics_bot" 
+            headers["X-Title"] = "LeepaBot"
 
-        content = result["choices"][0]["message"]["content"].strip()
-        content = re.sub(r"^```json\s*", "", content, flags=re.IGNORECASE)
-        content = re.sub(r"\s*```$", "", content)
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": final_temp
+        }
 
-        return json.loads(content)
+        try:
+            response = await client.post(endpoint, headers=headers, json=payload)
+            result = response.json()
 
-    except httpx.TimeoutException as e:
-        logger.error(f"Timeout [{provider_key}|{model}]: {e}")
-        return {"response": "", "reaction_emoji": "", "internal_mood": "timeout"}
-    except Exception as e:
-        logger.error(f"Unexpected error [{provider_key}|{model}]: {e}")
-        return {"response": "", "reaction_emoji": "", "internal_mood": "unknown_error"}
+            if "error" in result:
+                return handle_error_response(result["error"])
+
+            content = result["choices"][0]["message"]["content"].strip()
+            content = re.sub(r"^```json\s*", "", content, flags=re.IGNORECASE)
+            content = re.sub(r"\s*```$", "", content)
+
+            return json.loads(content)
+
+        except httpx.TimeoutException as e:
+            logger.error(f"Timeout [{provider_key}|{model}]: {e}")
+            return {"response": "", "reaction_emoji": "", "internal_mood": "timeout"}
+        except Exception as e:
+            logger.error(f"Unexpected error [{provider_key}|{model}]: {e}")
+            return {"response": "", "reaction_emoji": "", "internal_mood": "unknown_error"}
 
 
 async def generate_chat_response(context_block: str, combined_tag: str, target_message: str, server_id: str) -> dict:
