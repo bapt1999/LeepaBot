@@ -7,7 +7,7 @@ import re
 import logging
 from dotenv import load_dotenv
 import random
-from prompts import BASE_PERSONA, N_SHOT_EXAMPLES
+from core.prompts import BASE_PERSONA, N_SHOT_EXAMPLES
 
 load_dotenv()
 logger = logging.getLogger(__name__)
