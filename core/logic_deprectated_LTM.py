@@ -5,7 +5,7 @@ import re
 import os
 import logging
 from dotenv import load_dotenv
-from core.api_handler import generate_chat_response, summarize_chat_logs
+from core.api_handler import generate_chat_response, summarize_chat_logs, extract_recurring_patterns
 from core.memory_queue import ShortTermMemory
 
 # Initializes logging and loads environment variables from the .env file.
@@ -20,6 +20,11 @@ OTHER_BOT_REPLY_CAP = 1
 # Global dictionaries to track state across async operations.
 active_processing_locks = {}
 active_channel_memories = {}
+
+# ---------------------------------------------------------
+# LORE EXTRACTION KNOB
+# ---------------------------------------------------------
+LTM_EXTRACTION_INTERVAL = 50  # Number of messages before running a macro-extraction for long-term lore.
 
 # Pre-compiled regular expressions for identifying specific target users or names.
 REGEX_NAMED = re.compile(r'\b(leepa|leep)\b', re.IGNORECASE)
@@ -166,7 +171,10 @@ async def process_message(message, bot_user) -> str:
     overflow_text = local_memory.extract_overflow_for_summary()
     if overflow_text:
         asyncio.create_task(background_summarize(local_memory, overflow_text))
-
+        
+    # Macro pattern extraction triggered using the newly exposed global tuning knob.
+    if local_memory.total_message_count % LTM_EXTRACTION_INTERVAL == 0 and local_memory.running_summary:
+        asyncio.create_task(extract_recurring_patterns(server_id, local_memory.running_summary))
     
     combined_tag, should_trigger = await evaluate_message_context(message, bot_user)
     
