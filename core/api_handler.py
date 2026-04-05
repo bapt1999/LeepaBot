@@ -186,8 +186,6 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
             "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
             "generationConfig": {
                 "temperature": final_temp,
-                "frequencyPenalty": 0.4, 
-                "presencePenalty": 0.4,   
                 "responseMimeType": "application/json",
                 "thinkingConfig": {"thinkingLevel": "HIGH"} 
             }
