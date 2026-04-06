@@ -7,7 +7,7 @@ import re
 import logging
 from dotenv import load_dotenv
 import random
-from core.prompts import BASE_PERSONA, N_SHOT_EXAMPLES
+from core.prompts import BASE_PERSONA, N_SHOT_EXAMPLES, AVAILABLE_EMOJIS
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -45,19 +45,6 @@ THERMAL_BOUNDARIES = {
     "STANDARD": (0.7, 0.85) 
 }
 
-# ---------------------------------------------------------
-# PER-SERVER CUSTOM EMOJIS
-# ---------------------------------------------------------
-SERVER_1_ID = os.getenv("SERVER_1_ID")
-SERVER_2_ID = os.getenv("SERVER_2_ID")
-
-SERVER_EMOJIS = {}
-
-if SERVER_1_ID:
-    SERVER_EMOJIS[SERVER_1_ID] = "Server Custom Emojis: <:dogekek:1436270391520792586>, <:dissociation:1440239057027465226>, <:ah_yes:1464203336625684481>, <:MYHOLE:1440174910629613701>, <:antisemitic_merchant:1464198434222243902>, <:autism:1436861690192072807>, <:bro_how:1435962427165642873>, <:cat_being_milked:1450004353636110410>, <:classic_pedo:1440174651811696714>, <:comptences_du_fromage:1466350469457645568>, <:cream_filled_bun:1464204397130158247>, <:debasedgod:1435962452146651237>, <:excellent:1436861573825036469>, <:faggot:1440175088757379122>, <:fellowkids:1464194657402486915>, <:gigachad:1464196577810841704>, <:festivebear:1444710441866760282>, <:girl~1:1440175280428810281>, <:girls_kissing:1464198273311969372>, <:glasses:1440175027491442718>, <:goatsex:1436861934266748958>, <:goodnight_little_bandit:1464195116729106525>, <:hammer~1:1464194158645481536>, <:hello:1440174501043245116>, <:i_am_very_smart:1464195984635461842>, <:im_something:1464195492685680690>, <:jennie:1436863216369139906>, <:jenniepog:1436862736029192232>, <:kek:1464192893794254924>, <:kodak:1436861829199433748>, <:later:1440174617292705892>, <:literally_me:1464193066796843112>, <:lou_squints:1446841801657942149>, <:macromastia:1435962437965713469>, <:markwtf:1440175216952348693>, <:microslop:1464197875419451430>, <:mm_yes_very_auspicious:1464196768404082821>, <:no_ai:1464193417897836689>, <:not_walu:1435962421515649177>, <:oos:1440175117358600212>, <:overreach:1464192612150939745>, <:papyrus_sus:1440962802335485993>, <:peachy:1435963766461431828>, <:pedobear:1435490800778608720>, <:pepe_5head:1434842782790586368>, <:piggy:1464195749465034910>, <:pikawow:1434842859382767666>, <:prompt_pls:1435962432823623741>, <:pusheenpopcorn:1481494370447397039>, <:racist:1464197524754530408>, <:ralph:1440175180751044628>, <:real_shit:1464448708769743113>, <:really_shit:1464449038429589661>, <:reeee:1435962448975757322>, <:remmington:1440174792593510460>, <:restwell:1440175003072073829>, <:sadgepray:1434842863497121854>, <:sama_propaganda:1464197165864849534>, <:santabear:1444736979555062052>, <:stardust:1455163635939672115>, <:take_the_l:1435963270216290406>, <:taps_sign:1482484269593923635>, <:thats_bullshit_but_i_believe_it:1464196291096740002>, <:touch_grass:1435962417325539460>, <:trashwalu:1440174937171296286>, <:walu_blunt:1464193867048812804>, <:walutrash:1440174968527781918>, <:war:1464197721920376927>, <:watermark:1464193987580661957>, <:white:1440174817478443018>, <:why_we_hide_some_media:1461642274160119849>, <:wurst:1435962456483823786>, <:yap:1454800262366630041>"
-if SERVER_2_ID:
-    SERVER_EMOJIS[SERVER_2_ID] = "Server Custom Emojis: <:pepe_coffee:777788889999>"
-
 _http_client: httpx.AsyncClient = None
 DEFAULT_TIMEOUT = 60.0
 CONNECT_TIMEOUT = 10.0
@@ -71,9 +58,6 @@ async def get_http_client() -> httpx.AsyncClient:
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=50)
         )
     return _http_client
-
-
-
 
 def assemble_dynamic_instructions(tag: str) -> str:
     """Parses the combined logic tag into a structured natural-language directive for the LLM."""
@@ -259,11 +243,9 @@ async def generate_chat_response(context_block: str, combined_tag: str, target_m
     dynamic_instruction = assemble_dynamic_instructions(combined_tag)
     current_thermal = calculate_thermal_scalar(combined_tag)
 
-    server_custom_emojis = SERVER_EMOJIS.get(server_id, "Use standard unicode emojis.")
-
     system_prompt = "\n\n".join([
         'You are a JSON-only API. Output exactly this schema: {"thinking_block": "string", "internal_mood": "string", "reaction_emoji": "string", "response": "string"}. Keep the thinking_block as a single, plain-text string without line breaks or double quotes. Use reaction_emoji for ONE emoji if it naturally fits the message vibe. Leave response empty if you determine the message does not logically require your intervention based on your Autonomy Directive.',
-        f"AVAILABLE EMOJIS FOR THIS SERVER: {server_custom_emojis}. CRITICAL EMOJI RULE: You MUST output the exact full string (e.g., `<:dogekek:1436270391520792586>`). NEVER use the human shortcode.",
+        f"AVAILABLE CUSTOM EMOJIS:\n{AVAILABLE_EMOJIS}\n\nCRITICAL EMOJI RULE: You MUST output the exact full string (e.g., `<:dogekek:1436270391520792586>`). NEVER use the human shortcode.",
         BASE_PERSONA,
         N_SHOT_EXAMPLES
     ])
