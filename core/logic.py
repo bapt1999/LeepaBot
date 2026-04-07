@@ -7,6 +7,7 @@ import logging
 from dotenv import load_dotenv
 from core.api_handler import generate_chat_response, summarize_chat_logs
 from core.memory_queue import ShortTermMemory
+from core.image_analysis import analyze_image
 
 # Initializes logging and loads environment variables from the .env file.
 logger = logging.getLogger(__name__)
@@ -150,7 +151,7 @@ async def background_summarize(local_memory, extracted_text: str):
 
 async def process_message(message, bot_user) -> str:
     """Primary pipeline for handling incoming Discord events and routing them to the external AI API."""
-    # Interception Matrix logic prevents dual-bot spam by locking threads.
+    
     if message.author.id == OTHER_BOT_ID and OTHER_BOT_ID != 0 and message.reference:
         target_id = message.reference.message_id
         if target_id in active_processing_locks:
@@ -158,8 +159,20 @@ async def process_message(message, bot_user) -> str:
                 active_processing_locks[target_id] = True
                 logger.info(f"Concurrent response detected for message {target_id}. Aborting execution.")
 
+    # --- VISUAL INTERCEPT BLOCK: image analysis is done through image_analysis.py. If an image is attached, its description is appended to the content payload. ---
+    content_payload = message.content
+    if message.attachments: 
+        valid_mime_types = {'image/png', 'image/jpeg', 'image/webp', 'image/gif'} # Prevents edge cases
+        for attachment in message.attachments:
+            if attachment.content_type in valid_mime_types:
+                image_desc = await analyze_image(attachment.url)
+                content_payload = f"{content_payload}\n{image_desc}".strip()
+    # -----------------------------------
+
     local_memory = get_channel_memory(message.channel.id)
-    local_memory.add_message(message.author.display_name, message.content)
+    # We pass content_payload, not the raw message.content, to account for potential image analysis results.
+    local_memory.add_message(message.author.display_name, content_payload)
+    
     
     server_id = str(message.guild.id) if message.guild else "DM"
     
