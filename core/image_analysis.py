@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-# Hardcoded, restrictive prompt to prevent LLM filler and hallucination.
+# Restrictive instructions to prevent LLM filler and hallucination.
 VISION_PROMPT = (
     "Analyze this image. Identify the subject, any visible text, and the visual medium/vibe "
     "(e.g., photograph, compressed meme, AI-generated, screenshot). "

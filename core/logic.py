@@ -162,7 +162,7 @@ async def process_message(message, bot_user) -> str:
     # --- VISUAL INTERCEPT BLOCK: image analysis is done through image_analysis.py. If an image is attached, its description is appended to the content payload. ---
     content_payload = message.content
     if message.attachments: 
-        valid_mime_types = {'image/png', 'image/jpeg', 'image/webp', 'image/gif'} # Prevents edge cases
+        valid_mime_types = {'image/png', 'image/jpeg', 'image/webp'} # Prevents edge cases. Gif videos are possible, but take long and consume tokens. They are not added in this specific version.
         for attachment in message.attachments:
             if attachment.content_type in valid_mime_types:
                 image_desc = await analyze_image(attachment.url)
