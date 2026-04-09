@@ -1,12 +1,10 @@
 START OF DOCUMENT
 
-REVISED PROJECT DOCUMENT: The Cognitive Evolution of LeepaBot
-
 User Profile and Objectives
-The background is a personal engineering journey driven by curiosity for vector mathematics, RAG pipelines, and AI behavioral architecture. The primary goal is to build a highly conversational, context-aware, autonomous Discord chatbot that actively participates in discussions, shitposts, and organically reacts to the channel vibe without needing direct command prompts. The secondary feature is the autonomous parsing of multi-modal attachments to fold visual context into ambient awareness.
+The background is a personal engineering journey driven by curiosity for AI behavioral architecture, context routing, and stateless cognitive pipelines. The primary goal is to build a highly conversational, context-aware, autonomous Discord chatbot that actively participates in discussions, shitposts, and organically reacts to the channel vibe without needing direct command prompts.
 
 Core Architectural Features
-The host uses the Python discord library, deployed 24/7 on a Google Cloud Platform e2-micro Linux server using a systemd background daemon. The external AI engine utilizes a multi-provider multiplexer supporting Gemini, Groq, DeepSeek, and OpenRouter. Sensitive data is secured in an environment file. The logic layer employs a multi-stage parallel-track probability filter to route messages based on engagement levels and conversational classifications.
+The host uses the Python discord library, deployed 24/7 on a Google Cloud Platform e2-micro Linux server using a systemd background daemon. The external AI engine utilizes a multi-provider multiplexer supporting Gemini, Groq, DeepSeek, and OpenRouter. Sensitive data is secured in an environment file. The logic layer employs a multi-stage parallel-track probability filter to route messages based on engagement levels and conversational classifications. Prompts and data are decoupled from routing logic to ensure clean separation of concerns.
 
 Phase 1: Foundation and Interface
 The bot establishes a reliable Discord connection, separating event handling from core business logic. This phase ensures the basic skeleton can send and receive messages while maintaining thread safety for asynchronous operations.
@@ -14,19 +12,22 @@ The bot establishes a reliable Discord connection, separating event handling fro
 Phase 2: Social Cognition and Routing
 The bot utilizes a dynamic multi-state router. The engagement track handles Direct, Quoted, and Ambient mentions. The classification track flags content as Standard, Shitpost, Yelling, Wall of Text, or Quick Banter. These tags are used to dynamically assemble instructions for the LLM brain, allowing it to adapt its tone to the current channel energy.
 
-Phase 3: Recursive Memory and Semantic RAG
-The bot maintains isolated Short-Term Memory (STM) queues for unique channel IDs. When the queue reaches capacity, a non-blocking background thread compresses logs into a dense running summary. Long-Term Memory (LTM) utilizes a pure Python RAG pipeline with gemini-embedding-001. A restructured retrieval logic was implemented: LTM = [All Core Memories] + [Top Semantic Hit]. This ensures pivotal server lore is always present while surfacing only the single most relevant historical joke. An Extraction Firewall was installed in the background summarizer to prevent model autophagy; it is strictly forbidden from recording Leepa's own behavior, instead capturing user lore as third-person comedic observations.
+Phase 3: Stateless Short-Term Memory
+The bot maintains isolated Short-Term Memory queues for unique channel IDs. When the queue reaches capacity, a non-blocking background thread compresses logs into a dense running summary. Long-Term Memory extraction and RAG pipelines have been deliberately severed to prevent toxic trait compounding and context window hijacking. The bot now operates statelessly across sessions, relying purely on sharp, immediate contextual awareness and a resilient baseline persona rather than historical databases.
 
 Phase 4: Behavioral Expression and Persona
-The bot utilizes an Actor/Director persona architecture. An internal thinking block allows the LLM to analyze social dynamics before generating dialogue. Multilingual mastery (English, French, Spanish, Japanese) is maintained, with multi-turn N-shot examples teaching the bot to maintain conversational flow. Physical Discord emoji reactions are decoupled from text generation, allowing the bot to react to messages using per-server custom emoji dictionaries. An Interception Matrix and Infinite Loop Slayer prevent dual-bot spam by monitoring the event loop and climbing message chains to identify rival bot interactions.
+The bot utilizes a strict Chain-of-Thought Cognitive Pipeline. An internal thinking block allows the LLM to process intent, anchor its emotional baseline, and plan its comedic angle before rendering dialogue. The persona is engineered as a highly enthusiastic, zero-ego, partner-in-crime fox-girl who acts as an enabler and peer to the users. A hard syntax limitation strictly forbids the use of question marks to ensure all responses are definitive, declarative statements. N-shot behavioral examples and the core persona are modularized in a dedicated prompts file. Physical Discord emoji reactions are decoupled from text generation and utilize a centralized, global inventory of custom emojis available across all servers. An Interception Matrix and Infinite Loop Slayer prevent dual-bot spam.
 
 Phase 5: Thermal Tuning and Native Integration
-The bot employs a centralized Thermal Tuning Matrix that maps context-specific temperature ranges (e.g., Physics vs. Shitpost) to a normalized scale. A provider-agnostic translation layer scales these temperatures to model-specific limits to prevent JSON syntax breakage. The Gemini integration was migrated to a native REST endpoint, bypassing OpenAI compatibility wrappers to unlock thinkingConfig at a HIGH level. This allows the model to utilize its full reasoning capacity before outputting the final JSON payload.
+The bot employs a centralized Thermal Tuning Matrix that maps context-specific temperature ranges to a normalized scale. A provider-agnostic translation layer scales these temperatures to model-specific limits. The Gemini integration utilizes a native REST endpoint to unlock thinkingConfig at a HIGH level. Frequency and presence penalties have been intentionally excluded to maintain compatibility with bleeding-edge preview models, relying entirely on structural prompt entropy to prevent repetition loops.
 
 Phase 6: Infrastructure and DevOps
 The system is deployed on a GCP Ubuntu instance managed by systemd. Code updates are synchronized via GitHub. For real-time monitoring and debugging, the logic layer supports raw JSON output logging directly to the terminal, allowing for live analysis of the bot's thinking blocks and internal mood states without needing to parse system journals.
 
-Phase 7: Pending - Multi-Modal Awareness
-The final phase will implement processing for uploaded images and standard text documents, allowing the bot to fold visual data and external text files into her conversational awareness.
+Phase 7: Image Analysis
+The bot is able to see images in jpg, jpeg and png types, and integrate their contents in its answers.
+
+Pending:
+No new integrations are currently planned. The project is complete.
 
 END OF DOCUMENT
