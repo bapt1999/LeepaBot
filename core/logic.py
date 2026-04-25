@@ -207,7 +207,10 @@ async def process_message(message, bot_user) -> str:
     
     reply_text = response_data.get("response", "").strip()
     reaction_emoji = response_data.get("reaction_emoji", "").strip()
+    internal_mood = response_data.get("internal_mood", "neutral").strip()
+    thinking_block = response_data.get("thinking_block", "").strip()
     
+    # 1. Execute physical Discord actions
     if reaction_emoji:
         try:
             await message.add_reaction(reaction_emoji)
@@ -217,8 +220,26 @@ async def process_message(message, bot_user) -> str:
     if reply_text:
         try:
             await message.reply(reply_text)
-            local_memory.add_message("Leepa", reply_text)
         except Exception as e:
             logger.error(f"Discord API failure on message reply: {e}")
+
+    # 2. Construct the dense internal state string for the STM
+    state_parts = []
+    if thinking_block:
+        state_parts.append(f"Thought: {thinking_block}")
+    if internal_mood:
+        state_parts.append(f"Mood: {internal_mood}")
+    if reaction_emoji:
+        state_parts.append(f"Emoji: {reaction_emoji}")
+        
+    state_tag = f"[{' | '.join(state_parts)}]\n" if state_parts else ""
+    
+    # 3. Log to memory, enforcing object permanence for silences
+    if reply_text:
+        memory_log = f"{state_tag}{reply_text}"
+    else:
+        memory_log = f"{state_tag}(Silence)"
+        
+    local_memory.add_message("Leepa", memory_log)
             
     return ""

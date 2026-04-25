@@ -14,6 +14,11 @@ logger = logging.getLogger(__name__)
 
 ACTIVE_PROFILE = "gemini_3_flash"  
 
+# ---------------------------------------------------------
+# BEHAVIORAL TOGGLE
+# ---------------------------------------------------------
+USE_N_SHOTS = False  # Set to True to inject N_SHOT_EXAMPLES into the prompt. Set to False to only operate on her base sysprompt.
+
 PROFILES = {
     "groq_llama": {"provider": "groq", "model": "llama-3.1-8b-instant"},
     "groq_qwen": {"provider": "groq", "model": "qwen/qwen3-32b"},
@@ -75,7 +80,7 @@ def assemble_dynamic_instructions(tag: str) -> str:
         directives.append("You were not directly addressed. You are organically injecting yourself into the conversation. Add a perceptive or funny observation.")
         
     if vibe == "SHITPOST":
-        directives.append("The user is using internet slang or shitposting. Match the chaotic energy effortlessly.")
+        directives.append("The user is using internet slang or shitposting. Match the shitposting energy with high-density lateral thinking.")
     elif vibe == "WALL_OF_TEXT":
         directives.append("The user just posted a massive wall of text. React to the sheer volume of words rather than analyzing every detail.")
     elif vibe == "YELLING":
@@ -243,14 +248,20 @@ async def generate_chat_response(context_block: str, combined_tag: str, target_m
     dynamic_instruction = assemble_dynamic_instructions(combined_tag)
     current_thermal = calculate_thermal_scalar(combined_tag)
 
-    system_prompt = "\n\n".join([
+    # Base prompt components
+    prompt_parts = [
         'You are a JSON-only API. Output exactly this schema: {"thinking_block": "string", "internal_mood": "string", "reaction_emoji": "string", "response": "string"}. Keep the thinking_block as a single, plain-text string without line breaks or double quotes. Use reaction_emoji for ONE emoji if it naturally fits the message vibe. Leave response empty if you determine the message does not logically require your intervention based on your Autonomy Directive.',
         f"AVAILABLE CUSTOM EMOJIS:\n{AVAILABLE_EMOJIS}\n\nCRITICAL EMOJI RULE: You MUST output the exact full string (e.g., `<:dogekek:1436270391520792586>`). NEVER use the human shortcode.",
-        BASE_PERSONA,
-        N_SHOT_EXAMPLES
-    ])
+        BASE_PERSONA
+    ]
 
-    micro_anchor = "SYSTEM DIRECTIVE: Maintain your highly enthusiastic, zero-ego, partner-in-crime energy. Your response MUST be a definitive, declarative statement. NO QUESTION MARKS."
+    # Conditionally inject the N-Shots
+    if USE_N_SHOTS:
+        prompt_parts.append(N_SHOT_EXAMPLES)
+
+    system_prompt = "\n\n".join(prompt_parts)
+
+    micro_anchor = "SYSTEM DIRECTIVE: Maintain your zero-ego, partner-in-crime energy. Your response MUST be a definitive, declarative statement. NO QUESTION MARKS."
     
     user_prompt = "\n\n".join([
         dynamic_instruction,
