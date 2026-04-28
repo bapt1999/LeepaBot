@@ -14,10 +14,7 @@ logger = logging.getLogger(__name__)
 
 ACTIVE_PROFILE = "gemini_3_flash"  
 
-# ---------------------------------------------------------
-# BEHAVIORAL TOGGLE
-# ---------------------------------------------------------
-USE_N_SHOTS = False  # Set to True to inject N_SHOT_EXAMPLES into the prompt. Set to False to only operate on her base sysprompt.
+USE_N_SHOTS = True  # Set to True to inject N_SHOT_EXAMPLES into the prompt. Set to False to only operate on her base sysprompt.
 
 PROFILES = {
     "groq_llama": {"provider": "groq", "model": "llama-3.1-8b-instant"},
