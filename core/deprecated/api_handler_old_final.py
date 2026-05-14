@@ -6,6 +6,7 @@ import mimetypes
 import re
 import logging
 from dotenv import load_dotenv
+import random
 from core.prompts import BASE_PERSONA, N_SHOT_EXAMPLES, AVAILABLE_EMOJIS
 
 load_dotenv()
@@ -13,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 ACTIVE_PROFILE = "gemini_3_flash"  
 
-USE_N_SHOTS = True 
+USE_N_SHOTS = True  # Set to True to inject N_SHOT_EXAMPLES into the prompt. Set to False to only operate on her base sysprompt.
 
 PROFILES = {
     "groq_llama": {"provider": "groq", "model": "llama-3.1-8b-instant"},
@@ -35,9 +36,16 @@ PROVIDERS = {
 }
 
 # ---------------------------------------------------------
-# OPTIMIZED STATIC TEMPERATURE
+# TEMPERATURE: TUNING MATRIX (0.0 to 1.0 Normalized Scale)
 # ---------------------------------------------------------
-STATIC_TEMPERATURE = 0.85
+THERMAL_BOUNDARIES = {
+    "SHITPOST": (0.85, 1.0),
+    "YELLING": (0.8, 0.95),
+    "QUICK_BANTER": (0.75, 0.9),
+    "WALL_OF_TEXT": (0.6, 0.8),
+    "PHYSICS": (0.1, 0.3),
+    "STANDARD": (0.7, 0.85) 
+}
 
 _http_client: httpx.AsyncClient = None
 DEFAULT_TIMEOUT = 60.0
@@ -52,6 +60,49 @@ async def get_http_client() -> httpx.AsyncClient:
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=50)
         )
     return _http_client
+
+def assemble_dynamic_instructions(tag: str) -> str:
+    """Parses the combined logic tag into a structured natural-language directive for the LLM."""
+    parts = tag.split('_', 1)
+    engagement = parts[0]
+    vibe = parts[1] if len(parts) > 1 else "STANDARD"
+    
+    directives = []
+    
+    if engagement == "DIRECT":
+        directives.append("The user has explicitly addressed you. Formulate a direct, casual response.")
+    elif engagement == "QUOTED":
+        directives.append("The user is directly replying to your previous message. Keep the conversational flow natural and laid-back.")
+    elif engagement == "AMBIENT":
+        directives.append("You were not directly addressed. You are organically injecting yourself into the conversation. Add a perceptive or funny observation.")
+        
+    if vibe == "SHITPOST":
+        directives.append("The user is using internet slang or shitposting. Match the shitposting energy with high-density lateral thinking.")
+    elif vibe == "WALL_OF_TEXT":
+        directives.append("The user just posted a massive wall of text. React to the sheer volume of words rather than analyzing every detail.")
+    elif vibe == "YELLING":
+        directives.append("The user is typing in all caps. Either match the hype or react with deadpan contrast.")
+    elif vibe == "QUICK_BANTER":
+        directives.append("The message is extremely brief. Fire back a quick, spicy, or sweet one-liner.")
+        
+    return "CONTEXT DIRECTIVE:\n- " + "\n- ".join(directives)
+
+def calculate_thermal_scalar(tag: str) -> float:
+    """Translates the conversational vibe into a normalized thermal scalar (0.0 to 1.0)."""
+    if "SHITPOST" in tag:
+        bounds = THERMAL_BOUNDARIES["SHITPOST"]
+    elif "YELLING" in tag:
+        bounds = THERMAL_BOUNDARIES["YELLING"]
+    elif "QUICK_BANTER" in tag:
+        bounds = THERMAL_BOUNDARIES["QUICK_BANTER"]
+    elif "WALL_OF_TEXT" in tag:
+        bounds = THERMAL_BOUNDARIES["WALL_OF_TEXT"]
+    elif "PHYSICS" in tag:
+        bounds = THERMAL_BOUNDARIES["PHYSICS"]
+    else:
+        bounds = THERMAL_BOUNDARIES["STANDARD"]
+        
+    return random.uniform(bounds[0], bounds[1])
 
 def prepare_attachment(file_path: str) -> dict | None:
     """Encodes standard file attachments for multi-modal processing support."""
@@ -99,8 +150,8 @@ def handle_error_response(error: dict) -> dict:
 
     return {"response": "", "reaction_emoji": "", "internal_mood": finish_reason}
 
-async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, model: str) -> dict:
-    """Executes the raw HTTP post request."""
+async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, model: str, thermal_scalar: float = 0.5) -> dict:
+    """Executes the raw HTTP post request, injecting entropy parameters across all providers."""
     provider = PROVIDERS.get(provider_key)
     if not provider or not provider.get("key"):
         logger.error(f"Provider '{provider_key}' is not configured or missing API key.")
@@ -112,7 +163,7 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
     # NATIVE GEMINI ROUTING
     # ---------------------------------------------------------
     if provider_key == "gemini":
-        final_temp = round(STATIC_TEMPERATURE * 1.8, 2)
+        final_temp = round(thermal_scalar * 1.8, 2)
         endpoint = f"{provider['url']}/{model}:generateContent?key={provider['key']}"
         headers = {"Content-Type": "application/json"}
         
@@ -146,7 +197,7 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
     # STANDARD OPENAI COMPATIBILITY ROUTING 
     # ---------------------------------------------------------
     else:
-        final_temp = STATIC_TEMPERATURE
+        final_temp = round(thermal_scalar * 0.9, 2)
         endpoint = f"{provider['url']}/chat/completions"
         headers = {
             "Authorization": f"Bearer {provider['key']}",
@@ -164,7 +215,9 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
                 {"role": "user", "content": user_prompt}
             ],
             "response_format": {"type": "json_object"},
-            "temperature": final_temp
+            "temperature": final_temp,
+            "frequency_penalty": 0.4,
+            "presence_penalty": 0.4
         }
 
         try:
@@ -187,9 +240,11 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
             logger.error(f"Unexpected error [{provider_key}|{model}]: {e}")
             return {"response": "", "reaction_emoji": "", "internal_mood": "unknown_error"}
 
-async def generate_chat_response(context_block: str, engagement_level: str, target_message: str, server_id: str) -> dict:
-    """Assembles the final payload. Python no longer pre-chews the vibe; it's up to the LLM now."""
-    
+async def generate_chat_response(context_block: str, combined_tag: str, target_message: str, server_id: str) -> dict:
+    """Assembles the final text payload. LTM has been completely severed from this context window."""
+    dynamic_instruction = assemble_dynamic_instructions(combined_tag)
+    current_thermal = calculate_thermal_scalar(combined_tag)
+
     # Base prompt components
     prompt_parts = [
         'You are a JSON-only API. Output exactly this schema: {"thinking_block": "string", "internal_mood": "string", "reaction_emoji": "string", "response": "string"}. Keep the thinking_block as a single, plain-text string without line breaks or double quotes. Use reaction_emoji for ONE emoji if it naturally fits the message vibe. Leave response empty if you determine the message does not logically require your intervention based on your Autonomy Directive.',
@@ -197,24 +252,24 @@ async def generate_chat_response(context_block: str, engagement_level: str, targ
         BASE_PERSONA
     ]
 
+    # Conditionally inject the N-Shots
     if USE_N_SHOTS:
         prompt_parts.append(N_SHOT_EXAMPLES)
 
     system_prompt = "\n\n".join(prompt_parts)
 
     micro_anchor = "SYSTEM DIRECTIVE: Maintain your zero-ego, partner-in-crime energy. Your response MUST be a definitive, declarative statement. NO QUESTION MARKS."
-    engagement_hint = "Context: You were explicitly pinged or mentioned." if engagement_level == "DIRECT" else "Context: This is an ambient conversation. Read the room and decide if jumping in is funny, or if you should stay silent."
     
     user_prompt = "\n\n".join([
+        dynamic_instruction,
         "=== RECENT CHANNEL HISTORY ===",
         context_block,
         micro_anchor,
         "=== CURRENT MESSAGE TO RESPOND TO ===",
         target_message,
-        f"[{engagement_hint}]"
     ])
 
-    return await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL)
+    return await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL, thermal_scalar=current_thermal)
 
 async def summarize_chat_logs(extracted_text: str, current_summary: str) -> str:
     """Passes arrayed overflow string chunks to the model for dense text summarization."""
@@ -229,8 +284,34 @@ async def summarize_chat_logs(extracted_text: str, current_summary: str) -> str:
     user_prompt = f"PREVIOUS SUMMARY:\n{current_summary}\n\nNEW LOGS TO COMPRESS:\n{extracted_text}" if current_summary else f"NEW LOGS TO COMPRESS:\n{extracted_text}"
     
     try:
-        result = await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL)
+        result = await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL, thermal_scalar=0.1)
         return result.get("response", "").strip()
     except Exception as e:
         logger.error(f"Failed to generate summary: {e}")
         return ""
+
+async def extract_recurring_patterns(server_id: str, current_summary: str):
+    """Parses long-term memory blobs to extract highly permanent data structures into the database."""
+    system_prompt = (
+        'You are a JSON-only data extraction AI. Output EXACTLY this schema: '
+        '{"extracted_lore": ["string", "string"]}. '
+        'Analyze the provided long-term chat summary and extract 0 to 3 PERMANENT running jokes, '
+        'or established server lore. Ignore one-off comments. '
+        'CRITICAL FIREWALL: You are strictly forbidden from recording Leepa\'s behavior, personality, or actions. '
+        'You may ONLY record user behavior, user quotes, and mutual running jokes. '
+        'Format all extracted facts purely as third-person comedic observations or playful banter (e.g. "[Running Joke] The users believe...", "[Lore] Bapt is known for..."). '
+        'If no genuine patterns exist yet, leave the array empty.'
+    )
+    
+    user_prompt = f"LONG-TERM CHAT SUMMARY:\n{current_summary}"
+    
+    try:
+        result = await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL, thermal_scalar=0.1)
+        new_patterns = result.get("extracted_lore", [])
+        
+        # Disabled LTM write operation for stateless testing
+        # if new_patterns:
+        #     await lore_db.add_dynamic_lore(server_id, new_patterns)
+            
+    except Exception as e:
+        logger.error(f"Long-term pattern extraction crashed: {e}")

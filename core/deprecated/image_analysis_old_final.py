@@ -3,7 +3,6 @@ import base64
 import logging
 import httpx
 from dotenv import load_dotenv
-from core.api_handler import get_http_client
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -93,19 +92,18 @@ async def analyze_with_openrouter(url: str, client: httpx.AsyncClient) -> str | 
         return None
 
 async def analyze_image(attachment_url: str) -> str:
-    """Main entry point. Piggybacks on the globally pooled HTTP client."""
-    client = await get_http_client()
-    
-    b64_image, mime_type = await fetch_image_as_base64(attachment_url, client)
-    
-    if b64_image and mime_type:
-        gemini_result = await analyze_with_gemini(b64_image, mime_type, client)
-        if gemini_result:
-            return f"[ATTACHMENT - Image Description: {gemini_result}]"
-    
-    logger.warning("Primary vision failed. Falling back to OpenRouter.")
-    openrouter_result = await analyze_with_openrouter(attachment_url, client)
-    if openrouter_result:
-        return f"[ATTACHMENT - Image Description: {openrouter_result}]"
+    """Main entry point. Attempts Gemini, falls back to OpenRouter."""
+    async with httpx.AsyncClient() as client:
+        b64_image, mime_type = await fetch_image_as_base64(attachment_url, client)
         
+        if b64_image and mime_type:
+            gemini_result = await analyze_with_gemini(b64_image, mime_type, client)
+            if gemini_result:
+                return f"[ATTACHMENT - Image Description: {gemini_result}]"
+        
+        logger.warning("Primary vision failed. Falling back to OpenRouter.")
+        openrouter_result = await analyze_with_openrouter(attachment_url, client)
+        if openrouter_result:
+            return f"[ATTACHMENT - Image Description: {openrouter_result}]"
+            
     return "[ATTACHMENT - Image Description: Unreadable or corrupted visual data.]"
