@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 ACTIVE_PROFILE = "gemini_3_flash"  
 
-USE_N_SHOTS = True 
+USE_N_SHOTS = True  # Set to True to inject N_SHOT_EXAMPLES into the prompt. Set to False to only operate on her base sysprompt.
 
 PROFILES = {
     "groq_llama": {"provider": "groq", "model": "llama-3.1-8b-instant"},
@@ -35,7 +35,7 @@ PROVIDERS = {
 }
 
 # ---------------------------------------------------------
-# OPTIMIZED STATIC TEMPERATURE
+# TEMPERATURE: STATIC HIGH-ENTROPY
 # ---------------------------------------------------------
 STATIC_TEMPERATURE = 0.85
 
@@ -52,6 +52,7 @@ async def get_http_client() -> httpx.AsyncClient:
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=50)
         )
     return _http_client
+
 
 def prepare_attachment(file_path: str) -> dict | None:
     """Encodes standard file attachments for multi-modal processing support."""
@@ -99,8 +100,8 @@ def handle_error_response(error: dict) -> dict:
 
     return {"response": "", "reaction_emoji": "", "internal_mood": finish_reason}
 
-async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, model: str) -> dict:
-    """Executes the raw HTTP post request."""
+async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, model: str, thermal_scalar: float = 0.85) -> dict:
+    """Executes the raw HTTP post request, injecting entropy parameters across all providers."""
     provider = PROVIDERS.get(provider_key)
     if not provider or not provider.get("key"):
         logger.error(f"Provider '{provider_key}' is not configured or missing API key.")
@@ -112,7 +113,7 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
     # NATIVE GEMINI ROUTING
     # ---------------------------------------------------------
     if provider_key == "gemini":
-        final_temp = round(STATIC_TEMPERATURE * 1.8, 2)
+        final_temp = round(thermal_scalar * 1.8, 2)
         endpoint = f"{provider['url']}/{model}:generateContent?key={provider['key']}"
         headers = {"Content-Type": "application/json"}
         
@@ -146,7 +147,7 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
     # STANDARD OPENAI COMPATIBILITY ROUTING 
     # ---------------------------------------------------------
     else:
-        final_temp = STATIC_TEMPERATURE
+        final_temp = round(thermal_scalar * 0.9, 2)
         endpoint = f"{provider['url']}/chat/completions"
         headers = {
             "Authorization": f"Bearer {provider['key']}",
@@ -164,7 +165,9 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
                 {"role": "user", "content": user_prompt}
             ],
             "response_format": {"type": "json_object"},
-            "temperature": final_temp
+            "temperature": final_temp,
+            "frequency_penalty": 0.4,
+            "presence_penalty": 0.4
         }
 
         try:
@@ -188,7 +191,7 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
             return {"response": "", "reaction_emoji": "", "internal_mood": "unknown_error"}
 
 async def generate_chat_response(context_block: str, engagement_level: str, target_message: str, server_id: str) -> dict:
-    """Assembles the final payload. Python no longer pre-chews the vibe; it's up to the LLM now."""
+    """Assembles the final text payload. LTM has been completely severed from this context window."""
     
     # Base prompt components
     prompt_parts = [
@@ -197,13 +200,14 @@ async def generate_chat_response(context_block: str, engagement_level: str, targ
         BASE_PERSONA
     ]
 
+    # Conditionally inject the N-Shots
     if USE_N_SHOTS:
         prompt_parts.append(N_SHOT_EXAMPLES)
 
     system_prompt = "\n\n".join(prompt_parts)
 
     micro_anchor = "SYSTEM DIRECTIVE: Maintain your zero-ego, partner-in-crime energy. Your response MUST be a definitive, declarative statement. NO QUESTION MARKS."
-    engagement_hint = "Context: You were explicitly pinged or mentioned." if engagement_level == "DIRECT" else "Context: This is an ambient conversation. Read the room and decide if jumping in is funny, or if you should stay silent."
+    engagement_hint = "Context: You were explicitly pinged or mentioned." if engagement_level in ["DIRECT", "QUOTED"] else "Context: This is an ambient conversation. Read the room and decide if jumping in is funny, or if you should stay silent."
     
     user_prompt = "\n\n".join([
         "=== RECENT CHANNEL HISTORY ===",
@@ -214,7 +218,7 @@ async def generate_chat_response(context_block: str, engagement_level: str, targ
         f"[{engagement_hint}]"
     ])
 
-    return await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL)
+    return await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL, thermal_scalar=STATIC_TEMPERATURE)
 
 async def summarize_chat_logs(extracted_text: str, current_summary: str) -> str:
     """Passes arrayed overflow string chunks to the model for dense text summarization."""
@@ -229,7 +233,7 @@ async def summarize_chat_logs(extracted_text: str, current_summary: str) -> str:
     user_prompt = f"PREVIOUS SUMMARY:\n{current_summary}\n\nNEW LOGS TO COMPRESS:\n{extracted_text}" if current_summary else f"NEW LOGS TO COMPRESS:\n{extracted_text}"
     
     try:
-        result = await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL)
+        result = await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL, thermal_scalar=0.1)
         return result.get("response", "").strip()
     except Exception as e:
         logger.error(f"Failed to generate summary: {e}")

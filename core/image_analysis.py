@@ -93,7 +93,7 @@ async def analyze_with_openrouter(url: str, client: httpx.AsyncClient) -> str | 
         return None
 
 async def analyze_image(attachment_url: str) -> str:
-    """Main entry point. Piggybacks on the globally pooled HTTP client."""
+    """Main entry point. Attempts Gemini, falls back to OpenRouter."""
     client = await get_http_client()
     
     b64_image, mime_type = await fetch_image_as_base64(attachment_url, client)

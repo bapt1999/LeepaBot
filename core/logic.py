@@ -1,19 +1,31 @@
 import asyncio
 import json
 import random
-import logging
+import re
 import os
+import logging
 from dotenv import load_dotenv
 from core.api_handler import generate_chat_response, summarize_chat_logs
 from core.memory_queue import ShortTermMemory
 from core.image_analysis import analyze_image
 
+# Initializes logging and loads environment variables from the .env file.
 logger = logging.getLogger(__name__)
 load_dotenv()
+
+# Pulls necessary Discord IDs for logic gating.
+BAPT_DISCORD_ID = int(os.getenv('BAPT_DISCORD_ID', 0))
+OTHER_BOT_ID = int(os.getenv('OTHER_BOT_ID', 0)) 
+OTHER_BOT_REPLY_CAP = 1 
 
 # Global dictionaries to track state across async operations.
 active_processing_locks = {}
 active_channel_memories = {}
+
+# Pre-compiled regular expressions for identifying specific target users or names.
+REGEX_NAMED = re.compile(r'\b(leepa|leep)\b', re.IGNORECASE)
+REGEX_VIP = re.compile(r'\b(hun|sweetie)\b', re.IGNORECASE)
+
 
 def get_channel_memory(channel_id: int) -> ShortTermMemory:
     """Retrieves or instantiates an isolated memory queue for a specific Discord channel."""
@@ -21,30 +33,75 @@ def get_channel_memory(channel_id: int) -> ShortTermMemory:
         active_channel_memories[channel_id] = ShortTermMemory()  
     return active_channel_memories[channel_id]
 
-async def evaluate_message_gate(message, bot_user) -> tuple[str, bool]:
-    """
-    A high-speed probabilistic gate. No semantic reading is done here.
-    Determines ONLY if the LLM should wake up and process the context.
-    """
-    # Absolute kill-switch: Do not process other bots' messages, preventing infinite loops instantly.
-    if message.author.bot:
-        return "IGNORE", False
 
+async def get_reply_chain_depth(message, bot_user) -> int:
+    """Recursively walks back the Discord reply tree to prevent infinite loops between bots."""
+    count = 0
+    current_msg = message
+    
+    while current_msg.reference and current_msg.reference.message_id:
+        parent_msg = current_msg.reference.resolved
+        if parent_msg is None:
+            try:
+                parent_msg = await current_msg.channel.fetch_message(current_msg.reference.message_id)
+            except Exception as e:
+                logger.warning(f"Failed to fetch parent message for loop constraint check: {e}")
+                break
+                
+        if parent_msg.author.id in [bot_user.id, OTHER_BOT_ID]:
+            count += 1
+            current_msg = parent_msg
+        else:
+            break
+            
+    return count
+
+
+async def evaluate_message_context(message, bot_user) -> tuple[str, bool]:
+    """
+    Evaluates a message's Engagement Level.
+    Returns a string tag and a boolean dictating whether to trigger the LLM.
+    """
+    # Infinite loop kill-switch for interacting with other bots.
+    if message.author.id == OTHER_BOT_ID and OTHER_BOT_ID != 0:
+        pingpong_depth = await get_reply_chain_depth(message, bot_user)
+        if pingpong_depth >= (OTHER_BOT_REPLY_CAP * 2):
+            return "IGNORE", False
+
+    raw_content = message.content.strip()
+    content_lower = raw_content.lower()
+    
+    # ---------------------------------------------------------
+    # TRACK A: ENGAGEMENT DETECTION
+    # ---------------------------------------------------------
     is_mentioned = bot_user in message.mentions
     is_replied_to = message.reference and message.reference.resolved and message.reference.resolved.author == bot_user
+    is_named = bool(REGEX_NAMED.search(content_lower))
+    is_creator_vip = (message.author.id == BAPT_DISCORD_ID) and bool(REGEX_VIP.search(content_lower))
     
-    # We maintain a lightweight name-check to ensure she always answers when spoken to organically.
-    content_lower = message.content.lower()
-    is_named = "leepa" in content_lower or "leep" in content_lower
-
-    if is_mentioned or is_replied_to or is_named:
-        return "DIRECT", True
-    
-    # Ambient messages get a flat 5% chance to wake the LLM. The LLM decides what to do next.
-    if random.random() < 0.05:
-        return "AMBIENT", True
+    engagement_level = "AMBIENT"
+    if is_mentioned or is_named or is_creator_vip:
+        engagement_level = "DIRECT"
+    elif is_replied_to:
+        engagement_level = "QUOTED"
         
-    return "IGNORED", False
+    # ---------------------------------------------------------
+    # PROBABILITY EXECUTION MATRIX
+    # ---------------------------------------------------------
+    is_rival_bot = (message.author.id == OTHER_BOT_ID and OTHER_BOT_ID != 0)
+    should_trigger = False
+    
+    if engagement_level in ["DIRECT", "QUOTED"]:
+        should_trigger = True
+    else:
+        # Applies a 30% penalty to probability if the message originated from a rival bot.
+        base_prob = 0.05
+        final_prob = base_prob * (0.3 if is_rival_bot else 1.0)
+        if random.random() < final_prob:
+            should_trigger = True
+            
+    return engagement_level, should_trigger
+
 
 async def background_summarize(local_memory, extracted_text: str):
     """Offloads the dense memory compression task to a non-blocking background thread."""
@@ -59,21 +116,31 @@ async def background_summarize(local_memory, extracted_text: str):
         logger.error(f"Background memory compression failed: {e}")
         local_memory.is_summarizing = False
 
+
 async def process_message(message, bot_user) -> str:
-    """Primary pipeline for handling incoming Discord events and routing them to the API."""
+    """Primary pipeline for handling incoming Discord events and routing them to the external AI API."""
     
-    # --- VISUAL INTERCEPT BLOCK ---
+    if message.author.id == OTHER_BOT_ID and OTHER_BOT_ID != 0 and message.reference:
+        target_id = message.reference.message_id
+        if target_id in active_processing_locks:
+            if active_processing_locks[target_id] != "IMMUNE":
+                active_processing_locks[target_id] = True
+                logger.info(f"Concurrent response detected for message {target_id}. Aborting execution.")
+
+    # --- VISUAL INTERCEPT BLOCK: image analysis is done through image_analysis.py. If an image is attached, its description is appended to the content payload. ---
     content_payload = message.content
     if message.attachments: 
-        valid_mime_types = {'image/png', 'image/jpeg', 'image/webp'} 
+        valid_im_types = {'image/png', 'image/jpeg', 'image/webp'} # Prevents edge cases. Gif videos are possible, but take long and consume tokens. They are not added in this specific version.
         for attachment in message.attachments:
-            if attachment.content_type in valid_mime_types:
+            if attachment.content_type in valid_im_types:
                 image_desc = await analyze_image(attachment.url)
                 content_payload = f"{content_payload}\n{image_desc}".strip()
     # -----------------------------------
 
     local_memory = get_channel_memory(message.channel.id)
+    # We pass content_payload, not the raw message.content, to account for potential image analysis results.
     local_memory.add_message(message.author.display_name, content_payload)
+    
     
     server_id = str(message.guild.id) if message.guild else "DM"
     
@@ -81,7 +148,8 @@ async def process_message(message, bot_user) -> str:
     if overflow_text:
         asyncio.create_task(background_summarize(local_memory, overflow_text))
 
-    engagement_level, should_trigger = await evaluate_message_gate(message, bot_user)
+    
+    engagement_level, should_trigger = await evaluate_message_context(message, bot_user)
     
     if not should_trigger:
         return ""
@@ -90,7 +158,7 @@ async def process_message(message, bot_user) -> str:
     named_target_message = f"{message.author.display_name}: {message.content}"
     
     # Direct engagement automatically grants lock immunity.
-    if engagement_level == "DIRECT":
+    if engagement_level in ["DIRECT", "QUOTED"]:
         active_processing_locks[message.id] = "IMMUNE"
     else:
         active_processing_locks[message.id] = False
@@ -98,7 +166,6 @@ async def process_message(message, bot_user) -> str:
     response_data = await generate_chat_response(context_block, engagement_level, named_target_message, server_id)
     print(f"\nRAW JSON OUTPUT:\n{json.dumps(response_data, indent=2)}\n")
     
-    # If a parallel operation flagged an interception, abort.
     if active_processing_locks.get(message.id) is True:
         del active_processing_locks[message.id]
         return ""
