@@ -5,8 +5,9 @@ import base64
 import mimetypes
 import re
 import logging
+import random
 from dotenv import load_dotenv
-from core.prompts import BASE_PERSONA, N_SHOT_EXAMPLES, AVAILABLE_EMOJIS
+from core.prompts import BASE_PERSONA, N_SHOT_EXAMPLES, AVAILABLE_EMOJIS, ENTROPY_WORDS
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -206,7 +207,8 @@ async def generate_chat_response(context_block: str, engagement_level: str, targ
 
     system_prompt = "\n\n".join(prompt_parts)
 
-    micro_anchor = "SYSTEM DIRECTIVE: Maintain your zero-ego, partner-in-crime energy. Your response MUST be a definitive, declarative statement. NO QUESTION MARKS."
+    seed_word = random.choice(ENTROPY_WORDS)
+    micro_anchor = f"SYSTEM DIRECTIVE: Maintain your zero-ego, partner-in-crime energy. Your response MUST build upon the previous message and expand the conversation outward. Your thinking_block MUST open with the word '{seed_word}'."
     engagement_hint = "Context: You were explicitly pinged or mentioned." if engagement_level in ["DIRECT", "QUOTED"] else "Context: This is an ambient conversation. Read the room and decide if jumping in is funny, or if you should stay silent."
     
     user_prompt = "\n\n".join([
