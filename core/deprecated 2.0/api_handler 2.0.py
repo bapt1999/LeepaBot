@@ -1,6 +1,8 @@
 import os
 import json
 import httpx
+import base64
+import mimetypes
 import re
 import logging
 import random
@@ -15,36 +17,12 @@ ACTIVE_PROFILE = "gemini_3_flash"
 USE_N_SHOTS = True  # Set to True to inject N_SHOT_EXAMPLES into the prompt. Set to False to only operate on her base sysprompt.
 
 PROFILES = {
-    "groq_llama": {
-        "provider": "groq", 
-        "model": "llama-3.1-8b-instant",
-        "capabilities": {"native_thinking": False, "temp_scalar": 0.9}
-    },
-    "groq_qwen": {
-        "provider": "groq", 
-        "model": "qwen/qwen3-32b",
-        "capabilities": {"native_thinking": False, "temp_scalar": 0.9}
-    },
-    "openrouter_qwen": {
-        "provider": "openrouter", 
-        "model": "qwen/qwen3-next-80b-a3b-instruct:free",
-        "capabilities": {"native_thinking": False, "temp_scalar": 0.9}
-    },
-    "gemini_flash": {
-        "provider": "gemini", 
-        "model": "gemini-2.5-flash",
-        "capabilities": {"native_thinking": False, "temp_scalar": 1.8}
-    },
-    "gemini_3_flash": {
-        "provider": "gemini", 
-        "model": "gemini-3-flash-preview",
-        "capabilities": {"native_thinking": True, "temp_scalar": 1.8}
-    },
-    "deepseek_chat": {
-        "provider": "deepseek", 
-        "model": "deepseek-chat",
-        "capabilities": {"native_thinking": False, "temp_scalar": 0.9}
-    }
+    "groq_llama": {"provider": "groq", "model": "llama-3.1-8b-instant"},
+    "groq_qwen": {"provider": "groq", "model": "qwen/qwen3-32b"},
+    "openrouter_qwen": {"provider": "openrouter", "model": "qwen/qwen3-next-80b-a3b-instruct:free"},
+    "gemini_flash": {"provider": "gemini", "model": "gemini-2.5-flash"},
+    "gemini_3_flash": {"provider": "gemini", "model": "gemini-3-flash-preview"},
+    "deepseek_chat": {"provider": "deepseek", "model": "deepseek-chat"}
 }
 
 ACTIVE_PROVIDER = PROFILES[ACTIVE_PROFILE]["provider"]
@@ -76,6 +54,26 @@ async def get_http_client() -> httpx.AsyncClient:
         )
     return _http_client
 
+
+def prepare_attachment(file_path: str) -> dict | None:
+    """Encodes standard file attachments for multi-modal processing support."""
+    mime_type, _ = mimetypes.guess_type(file_path)
+    try:
+        with open(file_path, "rb") as f:
+            base64_data = base64.b64encode(f.read()).decode("utf-8")
+    except Exception as e:
+        logger.error(f"Failed to read attachment '{file_path}': {e}")
+        return None
+
+    if mime_type and mime_type.startswith("image/"):
+        return {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{base64_data}"}}
+    else:
+        try:
+            text_content = base64.b64decode(base64_data).decode("utf-8")
+            return {"type": "text", "text": f"Attachment ({file_path}):\n{text_content}"}
+        except UnicodeDecodeError:
+            logger.warning(f"Skipping binary attachment '{file_path}' — cannot decode as text.")
+            return None
 
 def handle_error_response(error: dict) -> dict:
     """Parses standard OpenAI format errors to safely fail open on rate limits."""
@@ -112,17 +110,11 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
 
     client = await get_http_client()
 
-    capabilities = {"native_thinking": False, "temp_scalar": 1.0}
-    for profile in PROFILES.values():
-        if profile["model"] == model:
-            capabilities = profile.get("capabilities", capabilities)
-            break
-
     # ---------------------------------------------------------
     # NATIVE GEMINI ROUTING
     # ---------------------------------------------------------
     if provider_key == "gemini":
-        final_temp = round(thermal_scalar * capabilities.get("temp_scalar", 1.8), 2)
+        final_temp = round(thermal_scalar * 1.8, 2)
         endpoint = f"{provider['url']}/{model}:generateContent?key={provider['key']}"
         headers = {"Content-Type": "application/json"}
         
@@ -131,12 +123,10 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
             "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
             "generationConfig": {
                 "temperature": final_temp,
-                "responseMimeType": "application/json"
+                "responseMimeType": "application/json",
+                "thinkingConfig": {"thinkingLevel": "HIGH"} 
             }
         }
-
-        if capabilities.get("native_thinking"):
-            payload["generationConfig"]["thinkingConfig"] = {"thinkingLevel": "HIGH"}
         
         try:
             response = await client.post(endpoint, headers=headers, json=payload)
@@ -158,7 +148,7 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
     # STANDARD OPENAI COMPATIBILITY ROUTING 
     # ---------------------------------------------------------
     else:
-        final_temp = round(thermal_scalar * capabilities.get("temp_scalar", 0.9), 2)
+        final_temp = round(thermal_scalar * 0.9, 2)
         endpoint = f"{provider['url']}/chat/completions"
         headers = {
             "Authorization": f"Bearer {provider['key']}",

@@ -4,7 +4,6 @@ import random
 import re
 import os
 import logging
-import time
 from dotenv import load_dotenv
 from core.api_handler import generate_chat_response, summarize_chat_logs
 from core.memory_queue import ShortTermMemory
@@ -17,6 +16,7 @@ load_dotenv()
 # Pulls necessary Discord IDs for logic gating.
 BAPT_DISCORD_ID = int(os.getenv('BAPT_DISCORD_ID', 0))
 OTHER_BOT_ID = int(os.getenv('OTHER_BOT_ID', 0)) 
+OTHER_BOT_REPLY_CAP = 1 
 
 # Global dictionaries to track state across async operations.
 active_processing_locks = {}
@@ -34,17 +34,39 @@ def get_channel_memory(channel_id: int) -> ShortTermMemory:
     return active_channel_memories[channel_id]
 
 
+async def get_reply_chain_depth(message, bot_user) -> int:
+    """Recursively walks back the Discord reply tree to prevent infinite loops between bots."""
+    count = 0
+    current_msg = message
+    
+    while current_msg.reference and current_msg.reference.message_id:
+        parent_msg = current_msg.reference.resolved
+        if parent_msg is None:
+            try:
+                parent_msg = await current_msg.channel.fetch_message(current_msg.reference.message_id)
+            except Exception as e:
+                logger.warning(f"Failed to fetch parent message for loop constraint check: {e}")
+                break
+                
+        if parent_msg.author.id in [bot_user.id, OTHER_BOT_ID]:
+            count += 1
+            current_msg = parent_msg
+        else:
+            break
+            
+    return count
+
+
 async def evaluate_message_context(message, bot_user) -> tuple[str, bool]:
     """
     Evaluates a message's Engagement Level.
     Returns a string tag and a boolean dictating whether to trigger the LLM.
     """
-    # Immediate parent check to prevent bot loops without recursive API fetching.
+    # Infinite loop kill-switch for interacting with other bots.
     if message.author.id == OTHER_BOT_ID and OTHER_BOT_ID != 0:
-        if message.reference and message.reference.resolved:
-            parent_author_id = message.reference.resolved.author.id
-            if parent_author_id in [bot_user.id, OTHER_BOT_ID]:
-                return "IGNORE", False
+        pingpong_depth = await get_reply_chain_depth(message, bot_user)
+        if pingpong_depth >= (OTHER_BOT_REPLY_CAP * 2):
+            return "IGNORE", False
 
     raw_content = message.content.strip()
     content_lower = raw_content.lower()
@@ -97,26 +119,18 @@ async def background_summarize(local_memory, extracted_text: str):
 
 async def process_message(message, bot_user) -> str:
     """Primary pipeline for handling incoming Discord events and routing them to the external AI API."""
-    current_time = time.time()
     
-    # ---------------------------------------------------------
-    # STATE CLEANUP (GHOST LOCKS)
-    # ---------------------------------------------------------
-    expired_keys = [k for k, v in active_processing_locks.items() if current_time > v.get("expires", 0)]
-    for k in expired_keys:
-        del active_processing_locks[k]
-
     if message.author.id == OTHER_BOT_ID and OTHER_BOT_ID != 0 and message.reference:
         target_id = message.reference.message_id
-        lock_data = active_processing_locks.get(target_id)
-        if lock_data and lock_data["status"] != "IMMUNE":
-            active_processing_locks[target_id]["status"] = True
-            logger.info(f"Concurrent response detected for message {target_id}. Aborting execution.")
+        if target_id in active_processing_locks:
+            if active_processing_locks[target_id] != "IMMUNE":
+                active_processing_locks[target_id] = True
+                logger.info(f"Concurrent response detected for message {target_id}. Aborting execution.")
 
-    # --- VISUAL INTERCEPT BLOCK ---
+    # --- VISUAL INTERCEPT BLOCK: image analysis is done through image_analysis.py. If an image is attached, its description is appended to the content payload. ---
     content_payload = message.content
     if message.attachments: 
-        valid_im_types = {'image/png', 'image/jpeg', 'image/webp'}
+        valid_im_types = {'image/png', 'image/jpeg', 'image/webp'} # Prevents edge cases. Gif videos are possible, but take long and consume tokens. They are not added in this specific version.
         for attachment in message.attachments:
             if attachment.content_type in valid_im_types:
                 image_desc = await analyze_image(attachment.url)
@@ -124,7 +138,9 @@ async def process_message(message, bot_user) -> str:
     # -----------------------------------
 
     local_memory = get_channel_memory(message.channel.id)
+    # We pass content_payload, not the raw message.content, to account for potential image analysis results.
     local_memory.add_message(message.author.display_name, content_payload)
+    
     
     server_id = str(message.guild.id) if message.guild else "DM"
     
@@ -132,25 +148,25 @@ async def process_message(message, bot_user) -> str:
     if overflow_text:
         asyncio.create_task(background_summarize(local_memory, overflow_text))
 
+    
     engagement_level, should_trigger = await evaluate_message_context(message, bot_user)
     
     if not should_trigger:
         return ""
         
     context_block = local_memory.get_context_block()
-    named_target_message = f"{message.author.display_name}: {content_payload}"
+    named_target_message = f"{message.author.display_name}: {message.content}"
     
-    # Direct engagement automatically grants lock immunity. Locks expire after 60 seconds.
+    # Direct engagement automatically grants lock immunity.
     if engagement_level in ["DIRECT", "QUOTED"]:
-        active_processing_locks[message.id] = {"status": "IMMUNE", "expires": current_time + 60.0}
+        active_processing_locks[message.id] = "IMMUNE"
     else:
-        active_processing_locks[message.id] = {"status": False, "expires": current_time + 60.0}
+        active_processing_locks[message.id] = False
     
     response_data = await generate_chat_response(context_block, engagement_level, named_target_message, server_id)
     print(f"\nRAW JSON OUTPUT:\n{json.dumps(response_data, indent=2)}\n")
     
-    # Matrix Kill-Switch Check
-    if active_processing_locks.get(message.id, {}).get("status") is True:
+    if active_processing_locks.get(message.id) is True:
         del active_processing_locks[message.id]
         return ""
         

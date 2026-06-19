@@ -12,14 +12,17 @@ OVERFLOW_CHUNK_SIZE = 15    # The number of messages sliced off and summarized w
 
 class ShortTermMemory:
     def __init__(self):
+        self.core_limit = CORE_MEMORY_SIZE
         self.overflow_limit = CORE_MEMORY_SIZE + OVERFLOW_CHUNK_SIZE 
         self.messages = deque()
         self.running_summary = ""
         self.is_summarizing = False
+        self.total_message_count = 0 
 
     def add_message(self, author: str, content: str):
         """Adds a message to the right side of the queue."""
         self.messages.append({"author": author, "content": content})
+        self.total_message_count += 1 
         
     def get_context_block(self) -> str:
         """Assembles the payload block, fusing the compressed summary with the raw recent messages."""
