@@ -10,7 +10,7 @@ from core.prompts import BASE_PERSONA, N_SHOT_EXAMPLES, AVAILABLE_EMOJIS, ENTROP
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-ACTIVE_PROFILE = "gemini_3_flash"  
+ACTIVE_PROFILE = "gemini_flash"  
 
 USE_N_SHOTS = True  # Set to True to inject N_SHOT_EXAMPLES into the prompt. Set to False to only operate on her base sysprompt.
 
