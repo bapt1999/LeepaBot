@@ -202,7 +202,7 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
             logger.error(f"Unexpected error [{provider_key}|{model}]: {e}")
             return {"response": "", "reaction_emoji": "", "internal_mood": "unknown_error"}
 
-async def generate_chat_response(context_block: str, engagement_level: str, target_message: str) -> dict:
+async def generate_chat_response(context_block: str, engagement_level: str, target_message: str, server_id: str) -> dict:
     """Constructs the system and user prompts, then calls the LLM for a structured JSON response."""
 
     # Current date for context injection
