@@ -4,6 +4,7 @@ import httpx
 import re
 import logging
 import random
+from datetime import datetime
 from dotenv import load_dotenv
 from core.prompts import BASE_PERSONA, N_SHOT_EXAMPLES, AVAILABLE_EMOJIS, ENTROPY_WORDS
 
@@ -201,11 +202,15 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
             logger.error(f"Unexpected error [{provider_key}|{model}]: {e}")
             return {"response": "", "reaction_emoji": "", "internal_mood": "unknown_error"}
 
-async def generate_chat_response(context_block: str, engagement_level: str, target_message: str, server_id: str) -> dict:
-    """Assembles the final text payload. LTM has been completely severed from this context window."""
-    
+async def generate_chat_response(context_block: str, engagement_level: str, target_message: str) -> dict:
+    """Constructs the system and user prompts, then calls the LLM for a structured JSON response."""
+
+    # Current date for context injection
+    current_date = datetime.now().strftime("%A, %B %d, %Y") # e.g., "Saturday, June 27, 2026"
+
     # Base prompt components
     prompt_parts = [
+        f"Current Date: {current_date}",
         'You are a JSON-only API. Output exactly this schema: {"thinking_block": "string", "internal_mood": "string", "reaction_emoji": "string", "response": "string"}. Keep the thinking_block as a single, plain-text string without line breaks or double quotes. Use reaction_emoji for ONE emoji if it naturally fits the message vibe. Leave response empty if you determine the message does not logically require your intervention based on your Autonomy Directive.',
         f"AVAILABLE CUSTOM EMOJIS:\n{AVAILABLE_EMOJIS}\n\nCRITICAL EMOJI RULE: You MUST output the exact full string (e.g., `<:dogekek:1436270391520792586>`). NEVER use the human shortcode.",
         BASE_PERSONA
