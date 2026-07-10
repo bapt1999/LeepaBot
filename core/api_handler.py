@@ -11,7 +11,11 @@ from core.prompts import BASE_PERSONA, N_SHOT_EXAMPLES, AVAILABLE_EMOJIS, ENTROP
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-ACTIVE_PROFILE = "deepseek_openrouter"
+# Ordered fallback chain. The first profile is the primary; each subsequent
+# profile is tried only if the previous one failed (rate limit, timeout, error).
+# Profile-level fallback covers cross-provider failure, which OpenRouter's own
+# model-fallback feature cannot (it can only fall back within OpenRouter).
+PROFILE_CHAIN = ["deepseek_openrouter", "gemini_flash"]
 
 USE_N_SHOTS = True  # Set to True to inject N_SHOT_EXAMPLES into the prompt. Set to False to only operate on her base sysprompt.
 
@@ -290,9 +294,9 @@ def handle_error_response(error: dict) -> dict:
         logger.error(f"API error: {error_str}")
     else:
         wait_str = f" — retry in {wait_time:.1f}s" if wait_time else ""
-        logger.warning(f"Rate limited ({finish_reason}){wait_str}: {error_str[:120]}")
+        logger.warning(f"Rate limited ({finish_reason}){wait_str}: {error_str[:300]}")
 
-    return {"response": "", "reaction_emoji": "", "internal_mood": finish_reason}
+    return {"response": "", "reaction_emoji": "", "internal_mood": finish_reason, "_failed": True}
 
 async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, thermal_scalar: float | None = None) -> dict:
     """Executes the raw HTTP post request for a given profile, injecting entropy parameters across all providers.
@@ -301,7 +305,7 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
     profile = PROFILES.get(profile_key)
     if not profile:
         logger.error(f"Profile '{profile_key}' does not exist.")
-        return {"response": "", "reaction_emoji": "", "internal_mood": "error"}
+        return {"response": "", "reaction_emoji": "", "internal_mood": "error", "_failed": True}
 
     if thermal_scalar is None:
         thermal_scalar = draw_jittered_temperature()
@@ -313,7 +317,7 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
     provider = PROVIDERS.get(provider_key)
     if not provider or not provider.get("key"):
         logger.error(f"Provider '{provider_key}' is not configured or missing API key.")
-        return {"response": f"Error: Provider '{provider_key}' unavailable.", "reaction_emoji": ""}
+        return {"response": "", "reaction_emoji": "", "internal_mood": "error", "_failed": True}
 
     # Scale the normalized draw to the provider's band. Computed once, provider-agnostic.
     final_temp = round(thermal_scalar * capabilities.get("temp_scalar", 1.0), 2)
@@ -355,7 +359,7 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
             logger.error(f"Gemini Native Error [{model}]: {e}")
             if content is not None:
                 logger.error(f"Raw content that failed to parse:\n{content}")
-            return {"response": "", "reaction_emoji": "", "internal_mood": "error"}
+            return {"response": "", "reaction_emoji": "", "internal_mood": "error", "_failed": True}
 
     # ---------------------------------------------------------
     # STANDARD OPENAI COMPATIBILITY ROUTING
@@ -407,12 +411,34 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
 
         except httpx.TimeoutException as e:
             logger.error(f"Timeout [{provider_key}|{model}]: {e}")
-            return {"response": "", "reaction_emoji": "", "internal_mood": "timeout"}
+            return {"response": "", "reaction_emoji": "", "internal_mood": "timeout", "_failed": True}
         except Exception as e:
             logger.error(f"Unexpected error [{provider_key}|{model}]: {e}")
             if content is not None:
                 logger.error(f"Raw content that failed to parse:\n{content}")
-            return {"response": "", "reaction_emoji": "", "internal_mood": "unknown_error"}
+            return {"response": "", "reaction_emoji": "", "internal_mood": "unknown_error", "_failed": True}
+
+async def call_llm_with_fallback(system_prompt: str, user_prompt: str, thermal_scalar: float | None = None) -> dict:
+    """Walks PROFILE_CHAIN in order, returning the first successful response.
+    Each attempt draws its own jittered temperature (unless pinned), scaled by
+    that profile's own temp_scalar. If every profile fails, the last failure
+    dict is returned so the error mood still flows into Leepa's STM."""
+    result = {"response": "", "reaction_emoji": "", "internal_mood": "error", "_failed": True}
+
+    for i, profile_key in enumerate(PROFILE_CHAIN):
+        result = await call_llm(system_prompt, user_prompt, profile_key, thermal_scalar)
+        if not result.get("_failed"):
+            return result
+        if i + 1 < len(PROFILE_CHAIN):
+            logger.warning(
+                f"Profile '{profile_key}' failed ({result.get('internal_mood')}). "
+                f"Falling back to '{PROFILE_CHAIN[i + 1]}'."
+            )
+        else:
+            logger.error(f"All profiles in PROFILE_CHAIN failed. Last failure: {result.get('internal_mood')}")
+
+    return result
+
 
 async def generate_chat_response(context_block: str, engagement_level: str, target_message: str) -> dict:
     """Constructs the system and user prompts, then calls the LLM for a structured JSON response.
@@ -448,7 +474,7 @@ async def generate_chat_response(context_block: str, engagement_level: str, targ
         f"[{engagement_hint}]"
     ])
 
-    return await call_llm(system_prompt, user_prompt, ACTIVE_PROFILE)
+    return await call_llm_with_fallback(system_prompt, user_prompt)
 
 async def summarize_chat_logs(extracted_text: str, current_summary: str) -> str:
     """Passes arrayed overflow string chunks to the model for dense text summarization."""
@@ -462,7 +488,7 @@ async def summarize_chat_logs(extracted_text: str, current_summary: str) -> str:
     user_prompt = f"PREVIOUS SUMMARY:\n{current_summary}\n\nNEW LOGS TO COMPRESS:\n{extracted_text}" if current_summary else f"NEW LOGS TO COMPRESS:\n{extracted_text}"
 
     try:
-        result = await call_llm(system_prompt, user_prompt, ACTIVE_PROFILE, thermal_scalar=SUMMARY_TEMPERATURE)
+        result = await call_llm_with_fallback(system_prompt, user_prompt, thermal_scalar=SUMMARY_TEMPERATURE)
         return result.get("response", "").strip()
     except Exception as e:
         logger.error(f"Failed to generate summary: {e}")
