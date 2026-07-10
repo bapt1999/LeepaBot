@@ -11,7 +11,7 @@ from core.prompts import BASE_PERSONA, N_SHOT_EXAMPLES, AVAILABLE_EMOJIS, ENTROP
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-ACTIVE_PROFILE = "gemini_flash"
+ACTIVE_PROFILE = "deepseek_openrouter"
 
 USE_N_SHOTS = True  # Set to True to inject N_SHOT_EXAMPLES into the prompt. Set to False to only operate on her base sysprompt.
 
@@ -30,6 +30,11 @@ PROFILES = {
         "provider": "openrouter",
         "model": "qwen/qwen3-next-80b-a3b-instruct:free",
         "capabilities": {"native_thinking": False, "temp_scalar": 0.9}
+    },
+    "deepseek_openrouter": {
+        "provider": "openrouter",
+        "model": "deepseek/deepseek-chat-v3-0324",
+        "capabilities": {"native_thinking": False, "temp_scalar": 1.9}
     },
     "gemini_flash": {
         "provider": "gemini",
@@ -56,9 +61,26 @@ PROVIDERS = {
 }
 
 # ---------------------------------------------------------
-# TEMPERATURE: STATIC HIGH-ENTROPY
+# TEMPERATURE: JITTERED HIGH-ENTROPY
 # ---------------------------------------------------------
-STATIC_TEMPERATURE = 0.85
+# A fresh normalized scalar is drawn uniformly from this range on every chat
+# call, then multiplied by the active profile's temp_scalar to reach that
+# provider's usable band. One mechanism, per-model ranges via the scalar:
+#   deepseek_openrouter (x1.9): 0.86 - 2.00  (the target: coherent -> feral)
+#   gemini (x1.8):              0.81 - 1.89
+#   openai-compat (x0.9):       0.41 - 0.95
+# Temperature is per-token, so it only bites where the model is genuinely
+# uncertain (inside the strings). The JSON frame stays fixed regardless.
+TEMP_JITTER_RANGE = (0.45, 1.05)
+
+# Memory compression must stay deterministic and factual. Never jitter this.
+SUMMARY_TEMPERATURE = 0.10
+
+
+def draw_jittered_temperature() -> float:
+    """Draws a fresh normalized thermal scalar from the jitter range."""
+    return round(random.uniform(*TEMP_JITTER_RANGE), 3)
+
 
 _http_client: httpx.AsyncClient = None
 DEFAULT_TIMEOUT = 60.0
@@ -112,13 +134,17 @@ def handle_error_response(error: dict) -> dict:
 
     return {"response": "", "reaction_emoji": "", "internal_mood": finish_reason}
 
-async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, thermal_scalar: float = STATIC_TEMPERATURE) -> dict:
+async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, thermal_scalar: float | None = None) -> dict:
     """Executes the raw HTTP post request for a given profile, injecting entropy parameters across all providers.
-    The profile carries its own provider, model, and capabilities — no reverse lookups."""
+    thermal_scalar=None (the default) draws a fresh jittered temperature for this call.
+    Pass an explicit value to pin the temperature (e.g., the summarizer)."""
     profile = PROFILES.get(profile_key)
     if not profile:
         logger.error(f"Profile '{profile_key}' does not exist.")
         return {"response": "", "reaction_emoji": "", "internal_mood": "error"}
+
+    if thermal_scalar is None:
+        thermal_scalar = draw_jittered_temperature()
 
     provider_key = profile["provider"]
     model = profile["model"]
@@ -129,13 +155,16 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
         logger.error(f"Provider '{provider_key}' is not configured or missing API key.")
         return {"response": f"Error: Provider '{provider_key}' unavailable.", "reaction_emoji": ""}
 
+    # Scale the normalized draw to the provider's band. Computed once, provider-agnostic.
+    final_temp = round(thermal_scalar * capabilities.get("temp_scalar", 1.0), 2)
+    logger.info(f"[SAMPLING] {profile_key} → {model} | temp={final_temp} (norm={thermal_scalar})")
+
     client = await get_http_client()
 
     # ---------------------------------------------------------
     # NATIVE GEMINI ROUTING
     # ---------------------------------------------------------
     if provider_key == "gemini":
-        final_temp = round(thermal_scalar * capabilities.get("temp_scalar", 1.8), 2)
         endpoint = f"{provider['url']}/{model}:generateContent?key={provider['key']}"
         headers = {"Content-Type": "application/json"}
 
@@ -169,7 +198,6 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
     # STANDARD OPENAI COMPATIBILITY ROUTING
     # ---------------------------------------------------------
     else:
-        final_temp = round(thermal_scalar * capabilities.get("temp_scalar", 0.9), 2)
         endpoint = f"{provider['url']}/chat/completions"
         headers = {
             "Authorization": f"Bearer {provider['key']}",
@@ -192,6 +220,13 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
             "presence_penalty": 0.4
         }
 
+        # OpenRouter fans a single model across several backends with differing
+        # capabilities. require_parameters restricts routing to backends that
+        # actually honor response_format, so JSON mode holds even near temp 2.0.
+        # This automatically excludes backends (e.g. NovitaAI) that ignore it.
+        if provider_key == "openrouter":
+            payload["provider"] = {"require_parameters": True}
+
         try:
             response = await client.post(endpoint, headers=headers, json=payload)
             result = response.json()
@@ -210,7 +245,8 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
             return {"response": "", "reaction_emoji": "", "internal_mood": "unknown_error"}
 
 async def generate_chat_response(context_block: str, engagement_level: str, target_message: str) -> dict:
-    """Constructs the system and user prompts, then calls the LLM for a structured JSON response."""
+    """Constructs the system and user prompts, then calls the LLM for a structured JSON response.
+    Omitting thermal_scalar lets call_llm draw a fresh jittered temperature."""
 
     # Current date for context injection
     current_date = datetime.now().strftime("%A, %B %d, %Y") # e.g., "Saturday, June 27, 2026"
@@ -242,7 +278,7 @@ async def generate_chat_response(context_block: str, engagement_level: str, targ
         f"[{engagement_hint}]"
     ])
 
-    return await call_llm(system_prompt, user_prompt, ACTIVE_PROFILE, thermal_scalar=STATIC_TEMPERATURE)
+    return await call_llm(system_prompt, user_prompt, ACTIVE_PROFILE)
 
 async def summarize_chat_logs(extracted_text: str, current_summary: str) -> str:
     """Passes arrayed overflow string chunks to the model for dense text summarization."""
@@ -256,7 +292,7 @@ async def summarize_chat_logs(extracted_text: str, current_summary: str) -> str:
     user_prompt = f"PREVIOUS SUMMARY:\n{current_summary}\n\nNEW LOGS TO COMPRESS:\n{extracted_text}" if current_summary else f"NEW LOGS TO COMPRESS:\n{extracted_text}"
 
     try:
-        result = await call_llm(system_prompt, user_prompt, ACTIVE_PROFILE, thermal_scalar=0.1)
+        result = await call_llm(system_prompt, user_prompt, ACTIVE_PROFILE, thermal_scalar=SUMMARY_TEMPERATURE)
         return result.get("response", "").strip()
     except Exception as e:
         logger.error(f"Failed to generate summary: {e}")
