@@ -142,6 +142,9 @@ async def process_message(message, bot_user) -> None:
                 content_payload = f"{content_payload}\n{image_desc}".strip()
     # -----------------------------------
 
+    channel_label = getattr(message.channel, "name", "DM")
+    logger.info(f">>> INCOMING [#{channel_label}] {message.author.display_name}: {content_payload}")
+
     local_memory = get_channel_memory(message.channel.id)
     local_memory.add_message(message.author.display_name, content_payload)
 
@@ -162,7 +165,7 @@ async def process_message(message, bot_user) -> None:
     active_processing_locks[message.id] = {"status": lock_status, "expires": current_time + 60.0}
 
     response_data = await generate_chat_response(context_block, engagement_level, named_target_message)
-    print(f"\nRAW JSON OUTPUT:\n{json.dumps(response_data, indent=2)}\n")
+    logger.info(f"<<< OUTGOING\n{json.dumps(response_data, indent=2, ensure_ascii=False)}")
 
     # Matrix Kill-Switch Check. pop() removes the lock in a single step regardless of outcome.
     if active_processing_locks.pop(message.id, {}).get("status") is True:

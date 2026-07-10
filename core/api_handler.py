@@ -180,6 +180,7 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
         if capabilities.get("native_thinking"):
             payload["generationConfig"]["thinkingConfig"] = {"thinkingLevel": "HIGH"}
 
+        content = None
         try:
             response = await client.post(endpoint, headers=headers, json=payload)
             result = response.json()
@@ -192,6 +193,8 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
 
         except Exception as e:
             logger.error(f"Gemini Native Error [{model}]: {e}")
+            if content is not None:
+                logger.error(f"Raw content that failed to parse:\n{content}")
             return {"response": "", "reaction_emoji": "", "internal_mood": "error"}
 
     # ---------------------------------------------------------
@@ -227,6 +230,7 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
         if provider_key == "openrouter":
             payload["provider"] = {"require_parameters": True}
 
+        content = None
         try:
             response = await client.post(endpoint, headers=headers, json=payload)
             result = response.json()
@@ -242,6 +246,8 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
             return {"response": "", "reaction_emoji": "", "internal_mood": "timeout"}
         except Exception as e:
             logger.error(f"Unexpected error [{provider_key}|{model}]: {e}")
+            if content is not None:
+                logger.error(f"Raw content that failed to parse:\n{content}")
             return {"response": "", "reaction_emoji": "", "internal_mood": "unknown_error"}
 
 async def generate_chat_response(context_block: str, engagement_level: str, target_message: str) -> dict:
