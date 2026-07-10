@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # profile is tried only if the previous one failed (rate limit, timeout, error).
 # Profile-level fallback covers cross-provider failure, which OpenRouter's own
 # model-fallback feature cannot (it can only fall back within OpenRouter).
-PROFILE_CHAIN = ["deepseek_openrouter"]
+PROFILE_CHAIN = ["deepseek_openrouter", "gemini_flash"]
 
 USE_N_SHOTS = True  # Set to True to inject N_SHOT_EXAMPLES into the prompt. Set to False to only operate on her base sysprompt.
 
@@ -37,9 +37,8 @@ PROFILES = {
     },
     "deepseek_openrouter": {
         "provider": "openrouter",
-        "model": "deepseek/deepseek-chat-v3-0324",
+        "model": "deepseek/deepseek-chat",
         "capabilities": {"native_thinking": False, "temp_scalar": 1.9},
-        # Prioritize GMICloud, fallback to SiliconFlow, ban DeepInfra and Novita
         "provider_routing": {
             "order": ["gmicloud", "siliconflow"],
             "ignore": ["deepinfra", "novita"],
@@ -236,6 +235,7 @@ def _normalize_fields(data: dict) -> dict:
             data[key] = str(value)
     return data
 
+
 def parse_json_payload(content: str) -> dict:
     """Turns a raw LLM output string into a usable schema dict, trying
     progressively more aggressive salvage strategies. Raises ValueError only
@@ -388,7 +388,6 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
         }
 
         # Per-model OpenRouter routing preferences, declared in the profile
-        # ("only" = allowlist, "ignore" = denylist, "order" = priority).
         if provider_key == "openrouter":
             routing = profile.get("provider_routing")
             if routing:
@@ -439,6 +438,7 @@ async def call_llm_with_fallback(system_prompt: str, user_prompt: str, thermal_s
 async def generate_chat_response(context_block: str, engagement_level: str, target_message: str) -> dict:
     """Constructs the system and user prompts, then calls the LLM for a structured JSON response.
     Omitting thermal_scalar lets call_llm draw a fresh jittered temperature."""
+
     # Current date for context injection
     current_date = datetime.now().strftime("%A, %B %d, %Y") # e.g., "Saturday, June 27, 2026"
 
