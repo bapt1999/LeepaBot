@@ -37,7 +37,7 @@ PROFILES = {
     },
     "deepseek_openrouter": {
         "provider": "openrouter",
-        "model": "deepseek/deepseek-chat",
+        "model": "deepseek/deepseek-chat-v3-0324",
         "capabilities": {"native_thinking": False, "temp_scalar": 1.9},
         "provider_routing": {
             "order": ["gmicloud", "siliconflow"],
