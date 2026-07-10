@@ -34,7 +34,12 @@ PROFILES = {
     "deepseek_openrouter": {
         "provider": "openrouter",
         "model": "deepseek/deepseek-chat-v3-0324",
-        "capabilities": {"native_thinking": False, "temp_scalar": 1.9}
+        "capabilities": {"native_thinking": False, "temp_scalar": 1.9},
+        # OpenRouter backend allowlist (lowercase slugs). DeepInfra produces
+        # malformed JSON and GMICloud is blocked on advice; SiliconFlow and
+        # NovitaAI remain. Novita ignores response_format — the JSON salvage
+        # pipeline covers its unconstrained output.
+        "provider_routing": {"only": ["siliconflow", "novita"]}
     },
     "gemini_flash": {
         "provider": "gemini",
@@ -71,7 +76,7 @@ PROVIDERS = {
 #   openai-compat (x0.9):       0.41 - 0.95
 # Temperature is per-token, so it only bites where the model is genuinely
 # uncertain (inside the strings). The JSON frame stays fixed regardless.
-TEMP_JITTER_RANGE = (0.7, 1.05)
+TEMP_JITTER_RANGE = (0.45, 1.05)
 
 # Memory compression must stay deterministic and factual. Never jitter this.
 SUMMARY_TEMPERATURE = 0.10
@@ -378,12 +383,16 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
             "presence_penalty": 0.4
         }
 
-        # OpenRouter fans a single model across several backends with differing
-        # capabilities. require_parameters restricts routing to backends that
-        # actually honor response_format, so JSON mode holds even near temp 2.0.
-        # This automatically excludes backends (e.g. NovitaAI) that ignore it.
+        # Per-model OpenRouter routing preferences, declared in the profile
+        # ("only" = allowlist, "ignore" = denylist, "order" = priority).
+        # require_parameters is deliberately NOT used: it would exclude any
+        # backend that ignores response_format (e.g. NovitaAI), collapsing the
+        # allowlist to a single provider. The JSON salvage pipeline handles
+        # unconstrained output instead.
         if provider_key == "openrouter":
-            payload["provider"] = {"require_parameters": True}
+            routing = profile.get("provider_routing")
+            if routing:
+                payload["provider"] = routing
 
         content = None
         try:
