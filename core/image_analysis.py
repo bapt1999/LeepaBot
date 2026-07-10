@@ -11,6 +11,11 @@ logger = logging.getLogger(__name__)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
+# Vision engines. Kept separate from the chat PROFILES in api_handler on purpose:
+# vision requirements (multimodal input, low latency, cheap) differ from chat.
+VISION_MODEL_PRIMARY = "gemini-2.5-flash"
+VISION_MODEL_FALLBACK = "meta-llama/llama-3.2-11b-vision-instruct"
+
 # Restrictive instructions to prevent LLM filler and hallucination.
 VISION_PROMPT = (
     "Analyze this image. Identify the subject, any visible text, and the visual medium/vibe "
@@ -31,11 +36,11 @@ async def fetch_image_as_base64(url: str, client: httpx.AsyncClient) -> tuple[st
         return None, None
 
 async def analyze_with_gemini(b64_image: str, mime_type: str, client: httpx.AsyncClient) -> str | None:
-    """Primary vision engine using Gemini 2.5 Flash via native REST."""
+    """Primary vision engine using Gemini via native REST."""
     if not GEMINI_API_KEY:
         return None
-        
-    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+
+    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{VISION_MODEL_PRIMARY}:generateContent?key={GEMINI_API_KEY}"
     payload = {
         "contents": [{
             "parts": [
@@ -49,7 +54,7 @@ async def analyze_with_gemini(b64_image: str, mime_type: str, client: httpx.Asyn
             ]
         }]
     }
-    
+
     try:
         response = await client.post(endpoint, json=payload, timeout=15.0)
         response.raise_for_status()
@@ -60,18 +65,19 @@ async def analyze_with_gemini(b64_image: str, mime_type: str, client: httpx.Asyn
         return None
 
 async def analyze_with_openrouter(url: str, client: httpx.AsyncClient) -> str | None:
-    """Fallback vision engine using OpenRouter."""
+    """Fallback vision engine using OpenRouter. Takes the raw URL, so it also
+    covers the case where the local image download failed."""
     if not OPENROUTER_API_KEY:
         return None
-        
+
     endpoint = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json"
     }
-    
+
     payload = {
-        "model": "meta-llama/llama-3.2-11b-vision-instruct", 
+        "model": VISION_MODEL_FALLBACK,
         "messages": [
             {
                 "role": "user",
@@ -82,7 +88,7 @@ async def analyze_with_openrouter(url: str, client: httpx.AsyncClient) -> str | 
             }
         ]
     }
-    
+
     try:
         response = await client.post(endpoint, headers=headers, json=payload, timeout=15.0)
         response.raise_for_status()
@@ -93,19 +99,22 @@ async def analyze_with_openrouter(url: str, client: httpx.AsyncClient) -> str | 
         return None
 
 async def analyze_image(attachment_url: str) -> str:
-    """Main entry point. Attempts Gemini, falls back to OpenRouter."""
+    """Main entry point. Attempts Gemini, falls back to OpenRouter.
+    Each failure path logs its actual cause before falling through."""
     client = await get_http_client()
-    
+
     b64_image, mime_type = await fetch_image_as_base64(attachment_url, client)
-    
+
     if b64_image and mime_type:
         gemini_result = await analyze_with_gemini(b64_image, mime_type, client)
         if gemini_result:
             return f"[ATTACHMENT - Image Description: {gemini_result}]"
-    
-    logger.warning("Primary vision failed. Falling back to OpenRouter.")
+        logger.warning("Primary vision engine failed. Falling back to OpenRouter.")
+    else:
+        logger.warning("Image download failed; Gemini skipped. Falling back to OpenRouter via direct URL.")
+
     openrouter_result = await analyze_with_openrouter(attachment_url, client)
     if openrouter_result:
         return f"[ATTACHMENT - Image Description: {openrouter_result}]"
-        
+
     return "[ATTACHMENT - Image Description: Unreadable or corrupted visual data.]"

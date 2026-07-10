@@ -11,45 +11,42 @@ from core.prompts import BASE_PERSONA, N_SHOT_EXAMPLES, AVAILABLE_EMOJIS, ENTROP
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-ACTIVE_PROFILE = "gemini_flash"  
+ACTIVE_PROFILE = "gemini_flash"
 
 USE_N_SHOTS = True  # Set to True to inject N_SHOT_EXAMPLES into the prompt. Set to False to only operate on her base sysprompt.
 
 PROFILES = {
     "groq_llama": {
-        "provider": "groq", 
+        "provider": "groq",
         "model": "llama-3.1-8b-instant",
         "capabilities": {"native_thinking": False, "temp_scalar": 0.9}
     },
     "groq_qwen": {
-        "provider": "groq", 
+        "provider": "groq",
         "model": "qwen/qwen3-32b",
         "capabilities": {"native_thinking": False, "temp_scalar": 0.9}
     },
     "openrouter_qwen": {
-        "provider": "openrouter", 
+        "provider": "openrouter",
         "model": "qwen/qwen3-next-80b-a3b-instruct:free",
         "capabilities": {"native_thinking": False, "temp_scalar": 0.9}
     },
     "gemini_flash": {
-        "provider": "gemini", 
+        "provider": "gemini",
         "model": "gemini-2.5-flash",
         "capabilities": {"native_thinking": False, "temp_scalar": 1.8}
     },
     "gemini_3_flash": {
-        "provider": "gemini", 
+        "provider": "gemini",
         "model": "gemini-3-flash-preview",
         "capabilities": {"native_thinking": True, "temp_scalar": 1.8}
     },
     "deepseek_chat": {
-        "provider": "deepseek", 
+        "provider": "deepseek",
         "model": "deepseek-chat",
         "capabilities": {"native_thinking": False, "temp_scalar": 0.9}
     }
 }
-
-ACTIVE_PROVIDER = PROFILES[ACTIVE_PROFILE]["provider"]
-ACTIVE_MODEL = PROFILES[ACTIVE_PROFILE]["model"]
 
 PROVIDERS = {
     "groq": {"url": "https://api.groq.com/openai/v1", "key": os.getenv("GROQ_API_KEY")},
@@ -78,8 +75,19 @@ async def get_http_client() -> httpx.AsyncClient:
     return _http_client
 
 
+def parse_json_payload(content: str) -> dict:
+    """Strips optional markdown fences from a raw LLM output string and parses it as JSON.
+    Shared by all provider branches to keep response handling in one place."""
+    content = content.strip()
+    content = re.sub(r"^```json\s*", "", content, flags=re.IGNORECASE)
+    content = re.sub(r"\s*```$", "", content)
+    return json.loads(content)
+
+
 def handle_error_response(error: dict) -> dict:
-    """Parses standard OpenAI format errors to safely fail open on rate limits."""
+    """Parses standard OpenAI format errors to safely fail open on rate limits.
+    The returned internal_mood (rate_limit / daily_limit / error) intentionally
+    flows into Leepa's STM so she is aware of her own outages."""
     error_str = str(error)
     finish_reason = "error"
     wait_time = None
@@ -104,20 +112,24 @@ def handle_error_response(error: dict) -> dict:
 
     return {"response": "", "reaction_emoji": "", "internal_mood": finish_reason}
 
-async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, model: str, thermal_scalar: float = 0.85) -> dict:
-    """Executes the raw HTTP post request, injecting entropy parameters across all providers."""
+async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, thermal_scalar: float = STATIC_TEMPERATURE) -> dict:
+    """Executes the raw HTTP post request for a given profile, injecting entropy parameters across all providers.
+    The profile carries its own provider, model, and capabilities — no reverse lookups."""
+    profile = PROFILES.get(profile_key)
+    if not profile:
+        logger.error(f"Profile '{profile_key}' does not exist.")
+        return {"response": "", "reaction_emoji": "", "internal_mood": "error"}
+
+    provider_key = profile["provider"]
+    model = profile["model"]
+    capabilities = profile.get("capabilities", {"native_thinking": False, "temp_scalar": 1.0})
+
     provider = PROVIDERS.get(provider_key)
     if not provider or not provider.get("key"):
         logger.error(f"Provider '{provider_key}' is not configured or missing API key.")
         return {"response": f"Error: Provider '{provider_key}' unavailable.", "reaction_emoji": ""}
 
     client = await get_http_client()
-
-    capabilities = {"native_thinking": False, "temp_scalar": 1.0}
-    for profile in PROFILES.values():
-        if profile["model"] == model:
-            capabilities = profile.get("capabilities", capabilities)
-            break
 
     # ---------------------------------------------------------
     # NATIVE GEMINI ROUTING
@@ -126,7 +138,7 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
         final_temp = round(thermal_scalar * capabilities.get("temp_scalar", 1.8), 2)
         endpoint = f"{provider['url']}/{model}:generateContent?key={provider['key']}"
         headers = {"Content-Type": "application/json"}
-        
+
         payload = {
             "systemInstruction": {"parts": [{"text": system_prompt}]},
             "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
@@ -138,25 +150,23 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
 
         if capabilities.get("native_thinking"):
             payload["generationConfig"]["thinkingConfig"] = {"thinkingLevel": "HIGH"}
-        
+
         try:
             response = await client.post(endpoint, headers=headers, json=payload)
             result = response.json()
-            
+
             if "error" in result:
                 return handle_error_response(result["error"])
-                
-            content = result["candidates"][0]["content"]["parts"][0]["text"].strip()
-            content = re.sub(r"^```json\s*", "", content, flags=re.IGNORECASE)
-            content = re.sub(r"\s*```$", "", content)
-            return json.loads(content)
-            
+
+            content = result["candidates"][0]["content"]["parts"][0]["text"]
+            return parse_json_payload(content)
+
         except Exception as e:
             logger.error(f"Gemini Native Error [{model}]: {e}")
             return {"response": "", "reaction_emoji": "", "internal_mood": "error"}
 
     # ---------------------------------------------------------
-    # STANDARD OPENAI COMPATIBILITY ROUTING 
+    # STANDARD OPENAI COMPATIBILITY ROUTING
     # ---------------------------------------------------------
     else:
         final_temp = round(thermal_scalar * capabilities.get("temp_scalar", 0.9), 2)
@@ -165,9 +175,9 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
             "Authorization": f"Bearer {provider['key']}",
             "Content-Type": "application/json",
         }
-        
+
         if provider_key == "openrouter":
-            headers["HTTP-Referer"] = "https://github.com/physics_bot" 
+            headers["HTTP-Referer"] = "https://github.com/physics_bot"
             headers["X-Title"] = "LeepaBot"
 
         payload = {
@@ -189,11 +199,8 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
             if "error" in result:
                 return handle_error_response(result["error"])
 
-            content = result["choices"][0]["message"]["content"].strip()
-            content = re.sub(r"^```json\s*", "", content, flags=re.IGNORECASE)
-            content = re.sub(r"\s*```$", "", content)
-
-            return json.loads(content)
+            content = result["choices"][0]["message"]["content"]
+            return parse_json_payload(content)
 
         except httpx.TimeoutException as e:
             logger.error(f"Timeout [{provider_key}|{model}]: {e}")
@@ -202,7 +209,7 @@ async def call_llm(system_prompt: str, user_prompt: str, provider_key: str, mode
             logger.error(f"Unexpected error [{provider_key}|{model}]: {e}")
             return {"response": "", "reaction_emoji": "", "internal_mood": "unknown_error"}
 
-async def generate_chat_response(context_block: str, engagement_level: str, target_message: str, server_id: str) -> dict:
+async def generate_chat_response(context_block: str, engagement_level: str, target_message: str) -> dict:
     """Constructs the system and user prompts, then calls the LLM for a structured JSON response."""
 
     # Current date for context injection
@@ -223,9 +230,9 @@ async def generate_chat_response(context_block: str, engagement_level: str, targ
     system_prompt = "\n\n".join(prompt_parts)
 
     seed_word = random.choice(ENTROPY_WORDS)
-    micro_anchor = f"SYSTEM DIRECTIVE: Maintain your zero-ego, partner-in-crime energy. Your response MUST build upon the previous message and expand the conversation outward. Your thinking_block MUST open with the word '{seed_word}'."
+    micro_anchor = f"SYSTEM DIRECTIVE: Make sure to prioritize your instructions. Your response MUST build upon the previous message and expand the conversation outward. Your thinking_block MUST open with the word '{seed_word}'."
     engagement_hint = "Context: You were explicitly pinged or mentioned." if engagement_level in ["DIRECT", "QUOTED"] else "Context: This is an ambient conversation. Read the room and decide if jumping in is funny, or if you should stay silent."
-    
+
     user_prompt = "\n\n".join([
         "=== RECENT CHANNEL HISTORY ===",
         context_block,
@@ -235,22 +242,21 @@ async def generate_chat_response(context_block: str, engagement_level: str, targ
         f"[{engagement_hint}]"
     ])
 
-    return await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL, thermal_scalar=STATIC_TEMPERATURE)
+    return await call_llm(system_prompt, user_prompt, ACTIVE_PROFILE, thermal_scalar=STATIC_TEMPERATURE)
 
 async def summarize_chat_logs(extracted_text: str, current_summary: str) -> str:
     """Passes arrayed overflow string chunks to the model for dense text summarization."""
     system_prompt = (
         'You are a JSON-only data compression AI. Output EXACTLY this schema: '
-        '{"internal_mood": "string", "reaction_emoji": "string", "response": "string"}. '
+        '{"response": "string"}. '
         'In the "response" field, write a dense 2-3 sentence summary of the provided chat logs, '
-        'merging it with any previous summary. Keep it strictly factual and concise. '
-        'Leave reaction_emoji empty.'
+        'merging it with any previous summary. Keep it strictly factual and concise.'
     )
-    
+
     user_prompt = f"PREVIOUS SUMMARY:\n{current_summary}\n\nNEW LOGS TO COMPRESS:\n{extracted_text}" if current_summary else f"NEW LOGS TO COMPRESS:\n{extracted_text}"
-    
+
     try:
-        result = await call_llm(system_prompt, user_prompt, ACTIVE_PROVIDER, ACTIVE_MODEL, thermal_scalar=0.1)
+        result = await call_llm(system_prompt, user_prompt, ACTIVE_PROFILE, thermal_scalar=0.1)
         return result.get("response", "").strip()
     except Exception as e:
         logger.error(f"Failed to generate summary: {e}")

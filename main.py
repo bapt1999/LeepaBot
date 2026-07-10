@@ -19,15 +19,10 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
-    print("MESSAGE RECEIVED:", message.content)
-
     if message.author == client.user:
         return
 
-    # Pass the full message and the bot user object to the logic layer
-    response = await process_message(message, client.user)
-    
-    if response:
-        await message.channel.send(response)
+    # The logic layer handles all Discord actions (replies, reactions) itself.
+    await process_message(message, client.user)
 
 client.run(TOKEN)
