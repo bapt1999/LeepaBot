@@ -35,7 +35,7 @@ PROFILES = {
         "provider": "openrouter",
         "model": "deepseek/deepseek-chat-v3-0324",
         "capabilities": {"native_thinking": False, "temp_scalar": 1.9},
-        "provider_routing": {"only": ["novita", "siliconflow"], "order": ["novita", "siliconflow"]} # Allowed providers, prefer Novita first
+        "provider_routing": {"only": ["novita"]} # Allowed providers, prefer Novita first
     },
     "gemini_flash": {
         "provider": "gemini",
