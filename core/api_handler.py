@@ -40,8 +40,8 @@ PROFILES = {
         "model": "deepseek/deepseek-chat-v3-0324",
         "capabilities": {"native_thinking": False, "temp_scalar": 1.9},
         "provider_routing": {
-            "order": ["gmicloud", "siliconflow"],
-            "ignore": ["deepinfra", "novita"],
+            "order": ["deepinfra", "gmicloud", "siliconflow"],
+            "ignore": ["novita"],
             "allow_fallbacks": True
         }
     },
