@@ -71,7 +71,7 @@ PROVIDERS = {
 #   openai-compat (x0.9):       0.41 - 0.95
 # Temperature is per-token, so it only bites where the model is genuinely
 # uncertain (inside the strings). The JSON frame stays fixed regardless.
-TEMP_JITTER_RANGE = (0.45, 1.05)
+TEMP_JITTER_RANGE = (0.7, 1.05)
 
 # Memory compression must stay deterministic and factual. Never jitter this.
 SUMMARY_TEMPERATURE = 0.10
@@ -97,13 +97,168 @@ async def get_http_client() -> httpx.AsyncClient:
     return _http_client
 
 
+# ---------------------------------------------------------
+# JSON SALVAGE PIPELINE
+# ---------------------------------------------------------
+# LLMs — especially at high temperature — do not reliably emit one clean JSON
+# object. Observed and anticipated failure shapes: markdown fences, chatter
+# around the object, the object wrapped in an array, bare lists/scalars,
+# truncated output (unterminated string / unclosed braces), and non-string
+# values in string fields. parse_json_payload is the single choke point every
+# provider branch goes through, so all of this is handled once, here.
+
+# Fields the downstream logic treats as strings (.strip() etc.).
+EXPECTED_STRING_FIELDS = ("thinking_block", "internal_mood", "reaction_emoji", "response")
+
+
+def _extract_json_objects(content: str) -> list[str]:
+    """Returns every top-level {...} substring in the text, respecting string
+    literals and escapes, so objects buried in chatter are recovered. If the
+    text ends mid-object, the truncated tail is included as a repair candidate."""
+    objects = []
+    depth = 0
+    start = None
+    in_string = False
+    escape = False
+
+    for i, ch in enumerate(content):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    objects.append(content[start:i + 1])
+                    start = None
+
+    if depth > 0 and start is not None:
+        objects.append(content[start:])  # truncated object; repair may save it
+
+    return objects
+
+
+def _repair_truncated_json(content: str) -> str:
+    """Best-effort repair for output cut off mid-generation: closes an
+    unterminated string, drops dangling separators/orphaned keys, and closes
+    any unclosed braces/brackets. The result is only used if json.loads
+    accepts it, so a failed repair costs nothing."""
+    stack = []
+    in_string = False
+    escape = False
+
+    for ch in content:
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append(ch)
+        elif ch == "}" and stack and stack[-1] == "{":
+            stack.pop()
+        elif ch == "]" and stack and stack[-1] == "[":
+            stack.pop()
+
+    body = content
+    if escape:
+        body = body[:-1]  # drop a dangling backslash
+    if in_string:
+        body += '"'
+
+    # Drop separators that would make the closure invalid, e.g. '{"a": "b",'
+    # or an orphaned '"key":' with no value.
+    body = body.rstrip()
+    while body and body[-1] in ",:":
+        if body[-1] == ":":
+            cut = max(body.rfind(",", 0, len(body) - 1), body.rfind("{", 0, len(body) - 1))
+            if cut == -1:
+                break
+            body = body[:cut + 1] if body[cut] == "{" else body[:cut]
+        else:
+            body = body[:-1]
+        body = body.rstrip()
+
+    for opener in reversed(stack):
+        body += "}" if opener == "{" else "]"
+    return body
+
+
+def _first_dict(parsed) -> dict | None:
+    """Accepts whatever json.loads produced and digs out the first dict:
+    the object itself, or the first dict inside a wrapping list."""
+    if isinstance(parsed, dict):
+        return parsed
+    if isinstance(parsed, list):
+        for item in parsed:
+            if isinstance(item, dict):
+                return item
+    return None
+
+
+def _normalize_fields(data: dict) -> dict:
+    """Coerces the known schema fields to strings so downstream .strip() calls
+    can never crash: None becomes '', nested structures become their JSON text,
+    numbers become their string form. Unknown extra keys are left untouched."""
+    for key in EXPECTED_STRING_FIELDS:
+        value = data.get(key, "")
+        if value is None:
+            data[key] = ""
+        elif isinstance(value, (dict, list)):
+            data[key] = json.dumps(value, ensure_ascii=False)
+        elif not isinstance(value, str):
+            data[key] = str(value)
+    return data
+
+
 def parse_json_payload(content: str) -> dict:
-    """Strips optional markdown fences from a raw LLM output string and parses it as JSON.
-    Shared by all provider branches to keep response handling in one place."""
-    content = content.strip()
-    content = re.sub(r"^```json\s*", "", content, flags=re.IGNORECASE)
-    content = re.sub(r"\s*```$", "", content)
-    return json.loads(content)
+    """Turns a raw LLM output string into a usable schema dict, trying
+    progressively more aggressive salvage strategies. Raises ValueError only
+    when nothing object-shaped can be recovered; the provider branches catch
+    that, log the raw content, and fail open as before."""
+    raw = content.strip()
+    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"\s*```$", "", raw)
+
+    # Candidate strings, cheapest first: the whole text, then each balanced
+    # object found inside it. dict.fromkeys dedupes while preserving order.
+    candidates = list(dict.fromkeys([raw] + _extract_json_objects(raw)))
+
+    for cand_idx, candidate in enumerate(candidates):
+        for repaired, variant in ((False, candidate), (True, _repair_truncated_json(candidate))):
+            if repaired and variant == candidate:
+                continue  # repair changed nothing; skip the duplicate attempt
+            try:
+                parsed = json.loads(variant)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            found = _first_dict(parsed)
+            if found is None:
+                continue  # valid JSON but no object anywhere (e.g. bare [1])
+            if cand_idx > 0 or repaired:
+                logger.warning(
+                    f"JSON salvage engaged (candidate #{cand_idx}, repaired={repaired}). "
+                    f"Raw output was not a clean object:\n{content.strip()[:500]}"
+                )
+            return _normalize_fields(found)
+
+    raise ValueError("No JSON object could be salvaged from model output.")
 
 
 def handle_error_response(error: dict) -> dict:
