@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # profile is tried only if the previous one failed (rate limit, timeout, error).
 # Profile-level fallback covers cross-provider failure, which OpenRouter's own
 # model-fallback feature cannot (it can only fall back within OpenRouter).
-PROFILE_CHAIN = ["deepseek_openrouter", "gemini_flash"]
+PROFILE_CHAIN = ["deepseek_openrouter"]
 
 USE_N_SHOTS = True  # Set to True to inject N_SHOT_EXAMPLES into the prompt. Set to False to only operate on her base sysprompt.
 
@@ -39,11 +39,12 @@ PROFILES = {
         "provider": "openrouter",
         "model": "deepseek/deepseek-chat-v3-0324",
         "capabilities": {"native_thinking": False, "temp_scalar": 1.9},
-        # OpenRouter backend allowlist (lowercase slugs). DeepInfra produces
-        # malformed JSON and GMICloud is blocked on advice; SiliconFlow and
-        # NovitaAI remain. Novita ignores response_format — the JSON salvage
-        # pipeline covers its unconstrained output.
-        "provider_routing": {"only": ["siliconflow", "novita"]}
+        # Prioritize GMICloud, fallback to SiliconFlow, ban DeepInfra and Novita
+        "provider_routing": {
+            "order": ["gmicloud", "siliconflow"],
+            "ignore": ["deepinfra", "novita"],
+            "allow_fallbacks": True
+        }
     },
     "gemini_flash": {
         "provider": "gemini",
@@ -235,7 +236,6 @@ def _normalize_fields(data: dict) -> dict:
             data[key] = str(value)
     return data
 
-
 def parse_json_payload(content: str) -> dict:
     """Turns a raw LLM output string into a usable schema dict, trying
     progressively more aggressive salvage strategies. Raises ValueError only
@@ -263,7 +263,7 @@ def parse_json_payload(content: str) -> dict:
             if cand_idx > 0 or repaired:
                 logger.warning(
                     f"JSON salvage engaged (candidate #{cand_idx}, repaired={repaired}). "
-                    f"Raw output was not a clean object:\n{content.strip()[:500]}"
+                    f"Raw output was not a clean object:\n{content.strip()}"
                 )
             return _normalize_fields(found)
 
@@ -294,7 +294,7 @@ def handle_error_response(error: dict) -> dict:
         logger.error(f"API error: {error_str}")
     else:
         wait_str = f" — retry in {wait_time:.1f}s" if wait_time else ""
-        logger.warning(f"Rate limited ({finish_reason}){wait_str}: {error_str[:300]}")
+        logger.warning(f"Rate limited ({finish_reason}){wait_str}: {error_str}")
 
     return {"response": "", "reaction_emoji": "", "internal_mood": finish_reason, "_failed": True}
 
@@ -389,10 +389,6 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
 
         # Per-model OpenRouter routing preferences, declared in the profile
         # ("only" = allowlist, "ignore" = denylist, "order" = priority).
-        # require_parameters is deliberately NOT used: it would exclude any
-        # backend that ignores response_format (e.g. NovitaAI), collapsing the
-        # allowlist to a single provider. The JSON salvage pipeline handles
-        # unconstrained output instead.
         if provider_key == "openrouter":
             routing = profile.get("provider_routing")
             if routing:
@@ -443,7 +439,6 @@ async def call_llm_with_fallback(system_prompt: str, user_prompt: str, thermal_s
 async def generate_chat_response(context_block: str, engagement_level: str, target_message: str) -> dict:
     """Constructs the system and user prompts, then calls the LLM for a structured JSON response.
     Omitting thermal_scalar lets call_llm draw a fresh jittered temperature."""
-
     # Current date for context injection
     current_date = datetime.now().strftime("%A, %B %d, %Y") # e.g., "Saturday, June 27, 2026"
 
