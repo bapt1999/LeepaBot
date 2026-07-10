@@ -12,10 +12,21 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Ordered fallback chain. The first profile is the primary; each subsequent
-# profile is tried only if the previous one failed (rate limit, timeout, error).
-# Profile-level fallback covers cross-provider failure, which OpenRouter's own
-# model-fallback feature cannot (it can only fall back within OpenRouter).
+# profile is tried only if the previous one HARD-failed (rate limit, timeout,
+# API error). Soft failures — the model produced text but not valid JSON — do
+# NOT trigger this chain; they go to the LLM formatter instead, preserving the
+# primary model's actual words.
 PROFILE_CHAIN = ["deepseek_openrouter", "gemini_flash"]
+
+# ---------------------------------------------------------
+# LLM JSON FORMATTER
+# ---------------------------------------------------------
+# When the generator emits text that the local salvage pipeline cannot parse,
+# the raw output is handed to this profile — at deterministic temperature —
+# to be reconstructed into the schema. Generation stays with the primary
+# model (its voice is preserved verbatim); the formatter only restructures.
+JSON_FORMATTER_PROFILE = "gemini_flash"
+FORMATTER_TEMPERATURE = 0.05
 
 USE_N_SHOTS = True  # Set to True to inject N_SHOT_EXAMPLES into the prompt. Set to False to only operate on her base sysprompt.
 
@@ -114,7 +125,8 @@ async def get_http_client() -> httpx.AsyncClient:
 # around the object, the object wrapped in an array, bare lists/scalars,
 # truncated output (unterminated string / unclosed braces), and non-string
 # values in string fields. parse_json_payload is the single choke point every
-# provider branch goes through, so all of this is handled once, here.
+# provider branch goes through, so all of this is handled once, here. When
+# even this fails, the raw output escalates to the LLM formatter.
 
 # Fields the downstream logic treats as strings (.strip() etc.).
 EXPECTED_STRING_FIELDS = ("thinking_block", "internal_mood", "reaction_emoji", "response")
@@ -222,11 +234,12 @@ def _first_dict(parsed) -> dict | None:
 
 
 def _normalize_fields(data: dict) -> dict:
-    """Coerces the known schema fields to strings so downstream .strip() calls
-    can never crash: None becomes '', nested structures become their JSON text,
-    numbers become their string form. Unknown extra keys are left untouched."""
+    """Guarantees every schema field exists as a string so downstream .get()/
+    .strip() calls can never crash: missing keys and None become '', nested
+    structures become their JSON text, numbers become their string form.
+    Unknown extra keys are left untouched."""
     for key in EXPECTED_STRING_FIELDS:
-        value = data.get(key, "")
+        value = data.get(key)
         if value is None:
             data[key] = ""
         elif isinstance(value, (dict, list)):
@@ -236,11 +249,22 @@ def _normalize_fields(data: dict) -> dict:
     return data
 
 
+def _has_recovered_content(result: dict) -> bool:
+    """True if local salvage actually recovered any usable field content."""
+    return any(str(result.get(k, "") or "").strip() for k in EXPECTED_STRING_FIELDS)
+
+
+def _has_meaningful_text(content: str) -> bool:
+    """True if the raw output contains anything beyond JSON scaffolding —
+    i.e., there was real content that an empty salvage result is losing."""
+    return bool(re.sub(r'[\s{}\[\]().,:;"\'`\\-]+', '', content))
+
+
 def parse_json_payload(content: str) -> dict:
     """Turns a raw LLM output string into a usable schema dict, trying
     progressively more aggressive salvage strategies. Raises ValueError only
-    when nothing object-shaped can be recovered; the provider branches catch
-    that, log the raw content, and fail open as before."""
+    when nothing object-shaped can be recovered; callers then either escalate
+    to the LLM formatter or fail open."""
     raw = content.strip()
     raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
     raw = re.sub(r"\s*```$", "", raw)
@@ -298,10 +322,65 @@ def handle_error_response(error: dict) -> dict:
 
     return {"response": "", "reaction_emoji": "", "internal_mood": finish_reason, "_failed": True}
 
-async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, thermal_scalar: float | None = None) -> dict:
+
+# ---------------------------------------------------------
+# LLM FORMATTER (soft-failure recovery)
+# ---------------------------------------------------------
+
+FORMATTER_SYSTEM_PROMPT = (
+    'You are a JSON repair utility. You receive the raw, malformed output of another AI. '
+    'That AI was supposed to answer with EXACTLY this schema: '
+    '{"thinking_block": "string", "internal_mood": "string", "reaction_emoji": "string", "response": "string"}. '
+    'Reconstruct its intended JSON object. CRITICAL RULES: '
+    '1. PRESERVE the original wording verbatim — you must not rewrite, censor, translate, summarize, or improve the text in any way. '
+    '2. Map content to the most plausible field; when in doubt, put dialogue-like text in "response". '
+    '3. NEVER invent content. If a field has no recoverable content, use an empty string. '
+    '4. If the raw output contains no recoverable content at all (e.g. a lone brace), return all four fields as empty strings. '
+    '5. Escape whatever is necessary (quotes, newlines) to produce strictly valid JSON. '
+    'Output ONLY the JSON object — no commentary, no markdown fences.'
+)
+
+
+async def _parse_or_reformat(content: str, allow_llm_formatter: bool, source: str) -> dict:
+    """Single exit path for generated text: local salvage first (free, instant);
+    escalate the raw text to the formatter LLM when salvage fails outright OR
+    when it "succeeds" with an empty schema while the raw output clearly held
+    content (e.g. 'pong. stay woke {' repairing into an empty object). The
+    formatter's own output is parsed with the formatter DISABLED, which
+    structurally prevents recursion."""
+    try:
+        result = parse_json_payload(content)
+        if _has_recovered_content(result) or not allow_llm_formatter or not _has_meaningful_text(content):
+            return result
+        logger.warning(f"[FORMATTER] Salvage recovered nothing from non-empty output [{source}]. Escalating to '{JSON_FORMATTER_PROFILE}'.")
+    except ValueError:
+        if not allow_llm_formatter:
+            raise
+        logger.warning(f"[FORMATTER] Local salvage failed for [{source}]. Escalating to '{JSON_FORMATTER_PROFILE}'.")
+
+    logger.warning(f"[FORMATTER] Raw generator output:\n{content}")
+
+    result = await call_llm(
+        FORMATTER_SYSTEM_PROMPT,
+        f"RAW OUTPUT TO REFORMAT:\n{content}",
+        JSON_FORMATTER_PROFILE,
+        thermal_scalar=FORMATTER_TEMPERATURE,
+        allow_llm_formatter=False
+    )
+
+    if result.get("_failed"):
+        logger.error("[FORMATTER] Formatter call itself failed; giving up on this output.")
+    else:
+        logger.info(f"[FORMATTER] Reformatted successfully. response={result.get('response', '')!r}")
+    return result
+
+
+async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, thermal_scalar: float | None = None,
+                   allow_llm_formatter: bool = True) -> dict:
     """Executes the raw HTTP post request for a given profile, injecting entropy parameters across all providers.
     thermal_scalar=None (the default) draws a fresh jittered temperature for this call.
-    Pass an explicit value to pin the temperature (e.g., the summarizer)."""
+    Pass an explicit value to pin the temperature (e.g., the summarizer).
+    allow_llm_formatter=False disables the soft-failure formatter escalation (used by the formatter itself)."""
     profile = PROFILES.get(profile_key)
     if not profile:
         logger.error(f"Profile '{profile_key}' does not exist.")
@@ -353,7 +432,7 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
                 return handle_error_response(result["error"])
 
             content = result["candidates"][0]["content"]["parts"][0]["text"]
-            return parse_json_payload(content)
+            return await _parse_or_reformat(content, allow_llm_formatter, f"{provider_key}|{model}")
 
         except Exception as e:
             logger.error(f"Gemini Native Error [{model}]: {e}")
@@ -402,7 +481,7 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
                 return handle_error_response(result["error"])
 
             content = result["choices"][0]["message"]["content"]
-            return parse_json_payload(content)
+            return await _parse_or_reformat(content, allow_llm_formatter, f"{provider_key}|{model}")
 
         except httpx.TimeoutException as e:
             logger.error(f"Timeout [{provider_key}|{model}]: {e}")
