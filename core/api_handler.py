@@ -51,8 +51,8 @@ PROFILES = {
         "model": "deepseek/deepseek-chat-v3-0324",
         "capabilities": {"native_thinking": False, "temp_scalar": 1.9},
         "provider_routing": {
-            "order": ["deepinfra", "siliconflow", "gmicloud"],
-            "ignore": ["novita"],
+            "order": ["deepinfra", "siliconflow"],
+            "ignore": ["novita", "gmicloud"], # NovitaAI does not support json formatting. GMICloud has consistently failed when used.
             "allow_fallbacks": True
         }
     },
