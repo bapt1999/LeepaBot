@@ -28,7 +28,7 @@ REGEX_NAMED = re.compile(r'\b(leepa|leep)\b', re.IGNORECASE)
 REGEX_VIP = re.compile(r'\b(hun|sweetie)\b', re.IGNORECASE)
 
 # Image MIME types accepted by the Visual Pre-Processor.
-VALID_IMAGE_TYPES = {'image/png', 'image/jpeg'}
+VALID_IMAGE_TYPES = {'image/png', 'image/jpeg', 'image/webp'}
 
 
 def get_channel_memory(channel_id: int) -> ShortTermMemory:
@@ -135,11 +135,15 @@ async def process_message(message, bot_user) -> None:
     # Runs before the trigger decision on purpose: image descriptions must enter
     # the STM even for ambient messages, so Leepa retains visual context later.
     content_payload = message.content
-    if message.attachments:
-        for attachment in message.attachments:
-            if attachment.content_type in VALID_IMAGE_TYPES:
-                image_desc = await analyze_image(attachment.url)
-                content_payload = f"{content_payload}\n{image_desc}".strip()
+    for attachment in message.attachments:
+        # Normalize: content_type can be None or carry parameters ("image/png; charset=...").
+        mime = (attachment.content_type or "").split(";")[0].strip().lower()
+        if mime in VALID_IMAGE_TYPES:
+            logger.info(f"[VISION] Analyzing attachment ({mime}): {attachment.url}")
+            image_desc = await analyze_image(attachment.url)
+            content_payload = f"{content_payload}\n{image_desc}".strip()
+        else:
+            logger.info(f"[VISION] Skipping attachment with unsupported type '{attachment.content_type}': {attachment.filename}")
     # -----------------------------------
 
     channel_label = getattr(message.channel, "name", "DM")

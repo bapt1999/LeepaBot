@@ -14,7 +14,10 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 # Vision engines. Kept separate from the chat PROFILES in api_handler on purpose:
 # vision requirements (multimodal input, low latency, cheap) differ from chat.
 VISION_MODEL_PRIMARY = "gemini-2.5-flash"
-VISION_MODEL_FALLBACK = "meta-llama/llama-3.2-11b-vision-instruct"
+# NOTE: the previous fallback (meta-llama/llama-3.2-11b-vision-instruct) is
+# delisted from OpenRouter on July 17, 2026. Llama 4 Scout is its natively
+# multimodal, cheaper successor.
+VISION_MODEL_FALLBACK = "meta-llama/llama-4-scout"
 
 # Restrictive instructions to prevent LLM filler and hallucination.
 VISION_PROMPT = (
@@ -108,13 +111,16 @@ async def analyze_image(attachment_url: str) -> str:
     if b64_image and mime_type:
         gemini_result = await analyze_with_gemini(b64_image, mime_type, client)
         if gemini_result:
+            logger.info(f"[VISION] Described by {VISION_MODEL_PRIMARY} ({len(gemini_result)} chars).")
             return f"[ATTACHMENT - Image Description: {gemini_result}]"
-        logger.warning("Primary vision engine failed. Falling back to OpenRouter.")
+        logger.warning("[VISION] Primary vision engine failed. Falling back to OpenRouter.")
     else:
-        logger.warning("Image download failed; Gemini skipped. Falling back to OpenRouter via direct URL.")
+        logger.warning("[VISION] Image download failed; Gemini skipped. Falling back to OpenRouter via direct URL.")
 
     openrouter_result = await analyze_with_openrouter(attachment_url, client)
     if openrouter_result:
+        logger.info(f"[VISION] Described by {VISION_MODEL_FALLBACK} ({len(openrouter_result)} chars).")
         return f"[ATTACHMENT - Image Description: {openrouter_result}]"
 
+    logger.error("[VISION] All vision engines failed for this image.")
     return "[ATTACHMENT - Image Description: Unreadable or corrupted visual data.]"
