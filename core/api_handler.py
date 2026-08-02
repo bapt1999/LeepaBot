@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # API error). Soft failures — the model produced text but not valid JSON — do
 # NOT trigger this chain; they go to the LLM formatter instead, preserving the
 # primary model's actual words.
-PROFILE_CHAIN = ["deepseek_openrouter", "gemini_flash"]
+PROFILE_CHAIN = ["deepseek_siliconflow", "deepseek_openrouter", "gemini_flash"]
 
 # ---------------------------------------------------------
 # LLM JSON FORMATTER
@@ -47,6 +47,11 @@ PROFILES = {
         "model": "qwen/qwen3-next-80b-a3b-instruct:free",
         "capabilities": {"native_thinking": False, "temp_scalar": 0.9}
     },
+    "deepseek_siliconflow": {
+        "provider": "siliconflow",
+        "model": "deepseek-ai/DeepSeek-V3",
+        "capabilities": {"native_thinking": False, "temp_scalar": 1.9}
+    },
     "deepseek_openrouter": {
         "provider": "openrouter",
         "model": "deepseek/deepseek-chat-v3-0324",
@@ -60,8 +65,8 @@ PROFILES = {
     "deepseek_v4_flash": {
         "provider": "openrouter",
         "model": "deepseek/deepseek-v4-flash-0731",
-        "capabilities": {"native_thinking": False, "temp_scalar": 1.4}, # temp scalar needs testing
-        "extra_payload": {"reasoning": {"enabled": False}}, # Keep it false for timely answers
+        "capabilities": {"native_thinking": False, "temp_scalar": 1.4}, # temp salar needs testing to adjust properly
+        "extra_payload": {"reasoning": {"enabled": False}},
         "provider_routing": {
             "allow_fallbacks": True,
             "require_parameters": True
@@ -89,6 +94,7 @@ PROVIDERS = {
     "deepseek": {"url": "https://api.deepseek.com/v1", "key": os.getenv("DEEPSEEK_API_KEY")},
     "openrouter": {"url": "https://openrouter.ai/api/v1", "key": os.getenv("OPENROUTER_API_KEY")},
     "gemini": {"url": "https://generativelanguage.googleapis.com/v1beta/models", "key": os.getenv("GEMINI_API_KEY")},
+    "siliconflow": {"url": "https://api.siliconflow.com/v1", "key": os.getenv("SILICONFLOW_API_KEY")},
 }
 
 # ---------------------------------------------------------
