@@ -64,8 +64,15 @@ PROFILES = {
     },
     "deepseek_v4_flash": {
         "provider": "openrouter",
+        # DeepSeek V4 Flash 0731 (re-post-trained revision, released Jul 31 2026).
+        # 1M context, $0.14/M in, $0.28/M out — cheaper than v3-0324.
         "model": "deepseek/deepseek-v4-flash-0731",
-        "capabilities": {"native_thinking": False, "temp_scalar": 1.4}, # temp salar needs testing to adjust properly
+        # Conservative starting scalar (band 0.63 – 1.47). V4's sampling
+        # behavior at high temp is untested for Leepa's persona; raise slowly.
+        "capabilities": {"native_thinking": False, "temp_scalar": 1.4},
+        # V4 Flash is a hybrid reasoning model. Reasoning is explicitly
+        # disabled: Leepa's thinking_block IS her chain-of-thought, and a
+        # native reasoning pass would burn output tokens invisibly.
         "extra_payload": {"reasoning": {"enabled": False}},
         "provider_routing": {
             "allow_fallbacks": True,
@@ -528,6 +535,24 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
 
             if "error" in result:
                 return handle_error_response(result["error"])
+
+            # Some providers (SiliconFlow among them) report errors as a
+            # TOP-LEVEL {"code": ..., "message": ...} object instead of
+            # nesting it under "error". Without this check, the missing
+            # "choices" key surfaced as a bare KeyError('choices') and the
+            # actual error message was never logged.
+            if "choices" not in result:
+                logger.error(
+                    f"[{provider_key}|{model}] Response has no 'choices' "
+                    f"(HTTP {response.status_code}). Raw body:\n"
+                    f"{json.dumps(result, ensure_ascii=False)}"
+                )
+                pseudo_error = dict(result) if isinstance(result, dict) else {"message": str(result)}
+                # Let HTTP 429s flow into the rate_limit mood even if the
+                # body's own "code" field is a provider-internal number.
+                if response.status_code == 429:
+                    pseudo_error["code"] = 429
+                return handle_error_response(pseudo_error)
 
             content = result["choices"][0]["message"]["content"]
             return await _parse_or_reformat(content, allow_llm_formatter, f"{provider_key}|{model}")
