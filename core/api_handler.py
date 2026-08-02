@@ -49,11 +49,21 @@ PROFILES = {
     "deepseek_openrouter": {
         "provider": "openrouter",
         "model": "deepseek/deepseek-chat-v3-0324",
-        "capabilities": {"native_thinking": False, "temp_scalar": 1.9},
+        "capabilities": {"native_thinking": False, "temp_scalar": 1.4},
         "provider_routing": {
-            "order": ["deepinfra", "siliconflow"],
-            "ignore": ["novita", "gmicloud"], # NovitaAI does not support json formatting. GMICloud has consistently failed when used.
-            "allow_fallbacks": True
+            "order": ["siliconflow", "crusoe"],
+            "allow_fallbacks": False,
+            "require_parameters": True
+        }
+    },
+    "deepseek_v4_flash": {
+        "provider": "openrouter",
+        "model": "deepseek/deepseek-v4-flash-0731",
+        "capabilities": {"native_thinking": False, "temp_scalar": 1.4}, # temp scalar needs testing
+        "extra_payload": {"reasoning": {"enabled": False}},
+        "provider_routing": {
+            "allow_fallbacks": True,
+            "require_parameters": True
         }
     },
     "gemini_flash": {
@@ -86,7 +96,7 @@ PROVIDERS = {
 # A fresh normalized scalar is drawn uniformly from this range on every chat
 # call, then multiplied by the active profile's temp_scalar to reach that
 # provider's usable band. One mechanism, per-model ranges via the scalar:
-#   deepseek_openrouter (x1.9): 0.86 - 2.00  (the target: coherent -> feral)
+#   deepseek_openrouter (x1.9): 0.86 - 2.00  (the target: coherent -> feral) NOTE: this may change. 
 #   gemini (x1.8):              0.81 - 1.89
 #   openai-compat (x0.9):       0.41 - 0.95
 # Temperature is per-token, so it only bites where the model is genuinely
@@ -95,6 +105,12 @@ TEMP_JITTER_RANGE = (0.45, 1.05)
 
 # Memory compression must stay deterministic and factual. Never jitter this.
 SUMMARY_TEMPERATURE = 0.10
+
+# ---------------------------------------------------------
+# OUTPUT COST GUARDRAIL
+# ---------------------------------------------------------
+# Some high-temperature generations have shown themselves to be costly. A very lenient cap is applied to the number of tokens the model is allowed to emit.
+MAX_OUTPUT_TOKENS = 2500
 
 
 def draw_jittered_temperature() -> float:
@@ -416,6 +432,7 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
             "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
             "generationConfig": {
                 "temperature": final_temp,
+                "maxOutputTokens": MAX_OUTPUT_TOKENS,
                 "responseMimeType": "application/json"
             }
         }
@@ -462,6 +479,7 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
             ],
             "response_format": {"type": "json_object"},
             "temperature": final_temp,
+            "max_tokens": MAX_OUTPUT_TOKENS,
             "frequency_penalty": 0.4,
             "presence_penalty": 0.4
         }
@@ -471,6 +489,11 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
             routing = profile.get("provider_routing")
             if routing:
                 payload["provider"] = routing
+
+        # Per-profile payload extensions
+        extra = profile.get("extra_payload")
+        if extra:
+            payload.update(extra)
 
         content = None
         try:
