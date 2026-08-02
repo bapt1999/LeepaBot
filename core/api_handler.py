@@ -2,6 +2,7 @@ import os
 import json
 import httpx
 import re
+import asyncio
 import logging
 import random
 from datetime import datetime
@@ -52,15 +53,15 @@ PROFILES = {
         "capabilities": {"native_thinking": False, "temp_scalar": 1.4},
         "provider_routing": {
             "order": ["siliconflow", "crusoe"],
-            "allow_fallbacks": False,
-            "require_parameters": True
+            "allow_fallbacks": True,
+            "ignore": ["novita"]  # NovitaAI ignores JSON formatting entirely.
         }
     },
     "deepseek_v4_flash": {
         "provider": "openrouter",
         "model": "deepseek/deepseek-v4-flash-0731",
         "capabilities": {"native_thinking": False, "temp_scalar": 1.4}, # temp scalar needs testing
-        "extra_payload": {"reasoning": {"enabled": False}},
+        "extra_payload": {"reasoning": {"enabled": False}}, # Keep it false for timely answers
         "provider_routing": {
             "allow_fallbacks": True,
             "require_parameters": True
@@ -109,8 +110,27 @@ SUMMARY_TEMPERATURE = 0.10
 # ---------------------------------------------------------
 # OUTPUT COST GUARDRAIL
 # ---------------------------------------------------------
-# Some high-temperature generations have shown themselves to be costly. A very lenient cap is applied to the number of tokens the model is allowed to emit.
-MAX_OUTPUT_TOKENS = 2500
+# Hard ceiling on generated tokens, applied to EVERY chat/summary/formatter
+# call on every provider. A healthy Leepa payload (thinking_block + mood +
+# emoji + response) is well under 400 tokens; a Discord reply caps at 2000
+# chars anyway. This exists because a degenerate high-temp generation once
+# filled thinking_block with pages of multilingual noise and billed ~$0.045
+# for a single message. With this cap the worst case is ~1000 output tokens
+# (≈ $0.0009 on v3-0324 at $0.90/M). A truncated JSON tail is handled by the
+# salvage pipeline's _repair_truncated_json, so capping is safe.
+MAX_OUTPUT_TOKENS = 1000
+
+# ---------------------------------------------------------
+# 429 RETRY / BACKOFF
+# ---------------------------------------------------------
+# The remedy_hint in a shared-pool 429 literally says "retry shortly". A
+# saturated pool won't clear on demand, but a brief retry often catches the
+# next open slot before we burn a whole profile and drop to gemini. Kept
+# small on purpose: Discord expects a reply in seconds, not minutes.
+# Only a rate_limit/timeout mood is retried; hard errors fall through instantly.
+RETRY_ON_MOODS = {"rate_limit", "timeout"}
+MAX_RETRIES_PER_PROFILE = 2      # attempts AFTER the first try (so up to 3 total)
+RETRY_BACKOFF_BASE = 1.5         # seconds; doubles each retry (1.5s, 3.0s)
 
 
 def draw_jittered_temperature() -> float:
@@ -490,7 +510,7 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
             if routing:
                 payload["provider"] = routing
 
-        # Per-profile payload extensions
+        # Per-profile payload extensions (e.g. disabling V4's native reasoning).
         extra = profile.get("extra_payload")
         if extra:
             payload.update(extra)
@@ -523,9 +543,26 @@ async def call_llm_with_fallback(system_prompt: str, user_prompt: str, thermal_s
     result = {"response": "", "reaction_emoji": "", "internal_mood": "error", "_failed": True}
 
     for i, profile_key in enumerate(PROFILE_CHAIN):
-        result = await call_llm(system_prompt, user_prompt, profile_key, thermal_scalar)
-        if not result.get("_failed"):
-            return result
+        # Try this profile, retrying on transient rate_limit/timeout moods
+        # before giving up on it and dropping to the next profile.
+        for attempt in range(MAX_RETRIES_PER_PROFILE + 1):
+            result = await call_llm(system_prompt, user_prompt, profile_key, thermal_scalar)
+            if not result.get("_failed"):
+                return result
+
+            mood = result.get("internal_mood")
+            has_retry_left = attempt < MAX_RETRIES_PER_PROFILE
+            if mood in RETRY_ON_MOODS and has_retry_left:
+                backoff = RETRY_BACKOFF_BASE * (2 ** attempt)
+                logger.warning(
+                    f"Profile '{profile_key}' hit '{mood}' "
+                    f"(attempt {attempt + 1}/{MAX_RETRIES_PER_PROFILE + 1}). "
+                    f"Retrying in {backoff:.1f}s."
+                )
+                await asyncio.sleep(backoff)
+                continue
+            break  # hard error, or retries exhausted → move to next profile
+
         if i + 1 < len(PROFILE_CHAIN):
             logger.warning(
                 f"Profile '{profile_key}' failed ({result.get('internal_mood')}). "
