@@ -5,13 +5,9 @@ import re
 import asyncio
 import logging
 import random
+from datetime import datetime
 from dotenv import load_dotenv
-from core import prompts
-from core.prompt_builder import (
-    build_chat_prompts,
-    expected_string_fields,
-    output_schema_example,
-)
+from core.prompts import BASE_PERSONA, N_SHOT_EXAMPLES, AVAILABLE_EMOJIS, ENTROPY_WORDS
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -23,9 +19,17 @@ logger = logging.getLogger(__name__)
 # primary model's actual words.
 PROFILE_CHAIN = ["deepseek_siliconflow", "deepseek_openrouter", "gemini_flash"]
 
-# The formatter repairs malformed JSON without rewriting Leepa's words.
+# ---------------------------------------------------------
+# LLM JSON FORMATTER
+# ---------------------------------------------------------
+# When the generator emits text that the local salvage pipeline cannot parse,
+# the raw output is handed to this profile — at deterministic temperature —
+# to be reconstructed into the schema. Generation stays with the primary
+# model (its voice is preserved verbatim); the formatter only restructures. ← This may be up to change soon.
 JSON_FORMATTER_PROFILE = "gemini_flash"
 FORMATTER_TEMPERATURE = 0.05
+
+USE_N_SHOTS = True  # Set to True to inject N_SHOT_EXAMPLES into the prompt. Set to False to only operate on her base sysprompt.
 
 PROFILES = {
     "groq_llama": {
@@ -100,8 +104,17 @@ PROVIDERS = {
     "siliconflow": {"url": "https://api.siliconflow.com/v1", "key": os.getenv("SILICONFLOW_API_KEY")},
 }
 
-# Each profile scales this normalized range to its model's useful band.
-# SiliconFlow DeepSeek: 0.86–2.00; OpenRouter DeepSeek: 0.63–1.47.
+# ---------------------------------------------------------
+# TEMPERATURE: JITTERED HIGH-ENTROPY
+# ---------------------------------------------------------
+# A fresh normalized scalar is drawn uniformly from this range on every chat
+# call, then multiplied by the active profile's temp_scalar to reach that
+# provider's usable band. One mechanism, per-model ranges via the scalar:
+#   deepseek_openrouter (x1.9): 0.86 - 2.00  (the target: coherent -> feral) NOTE: this may change. 
+#   gemini (x1.8):              0.81 - 1.89
+#   openai-compat (x0.9):       0.41 - 0.95
+# Temperature is per-token, so it only bites where the model is genuinely
+# uncertain (inside the strings). The JSON frame stays fixed regardless.
 TEMP_JITTER_RANGE = (0.45, 1.05)
 
 # Memory compression must stay deterministic and factual. Never jitter this.
@@ -163,6 +176,10 @@ async def get_http_client() -> httpx.AsyncClient:
 # values in string fields. parse_json_payload is the single choke point every
 # provider branch goes through, so all of this is handled once, here. When
 # even this fails, the raw output escalates to the LLM formatter.
+
+# Fields the downstream logic treats as strings (.strip() etc.).
+EXPECTED_STRING_FIELDS = ("thinking_block", "internal_mood", "reaction_emoji", "response")
+
 
 def _extract_json_objects(content: str) -> list[str]:
     """Returns every top-level {...} substring in the text, respecting string
@@ -270,12 +287,7 @@ def _normalize_fields(data: dict) -> dict:
     .strip() calls can never crash: missing keys and None become '', nested
     structures become their JSON text, numbers become their string form.
     Unknown extra keys are left untouched."""
-    active_fields = expected_string_fields()
-    for optional_field in ("thinking_block", "reaction_emoji"):
-        if optional_field not in active_fields:
-            data.pop(optional_field, None)
-
-    for key in active_fields:
+    for key in EXPECTED_STRING_FIELDS:
         value = data.get(key)
         if value is None:
             data[key] = ""
@@ -288,7 +300,7 @@ def _normalize_fields(data: dict) -> dict:
 
 def _has_recovered_content(result: dict) -> bool:
     """True if local salvage actually recovered any usable field content."""
-    return any(str(result.get(k, "") or "").strip() for k in expected_string_fields())
+    return any(str(result.get(k, "") or "").strip() for k in EXPECTED_STRING_FIELDS)
 
 
 def _has_meaningful_text(content: str) -> bool:
@@ -364,19 +376,18 @@ def handle_error_response(error: dict) -> dict:
 # LLM FORMATTER (soft-failure recovery)
 # ---------------------------------------------------------
 
-def build_formatter_system_prompt() -> str:
-    field_count = len(expected_string_fields())
-    return (
-        'You are a JSON repair utility. You receive the raw, malformed output of another AI. '
-        f'That AI was supposed to answer with EXACTLY this schema: {output_schema_example()}. '
-        'Reconstruct its intended JSON object. CRITICAL RULES: '
-        '1. PRESERVE the original wording verbatim — you must not rewrite, censor, translate, summarize, or improve the text in any way. '
-        '2. Map content to the most plausible field; when in doubt, put dialogue-like text in "response". '
-        '3. NEVER invent content. If a field has no recoverable content, use an empty string. '
-        f'4. If the raw output contains no recoverable content at all, return all {field_count} fields as empty strings. '
-        '5. Escape whatever is necessary to produce strictly valid JSON. '
-        'Output ONLY the JSON object — no commentary, no markdown fences.'
-    )
+FORMATTER_SYSTEM_PROMPT = (
+    'You are a JSON repair utility. You receive the raw, malformed output of another AI. '
+    'That AI was supposed to answer with EXACTLY this schema: '
+    '{"thinking_block": "string", "internal_mood": "string", "reaction_emoji": "string", "response": "string"}. '
+    'Reconstruct its intended JSON object. CRITICAL RULES: '
+    '1. PRESERVE the original wording verbatim — you must not rewrite, censor, translate, summarize, or improve the text in any way. '
+    '2. Map content to the most plausible field; when in doubt, put dialogue-like text in "response". '
+    '3. NEVER invent content. If a field has no recoverable content, use an empty string. '
+    '4. If the raw output contains no recoverable content at all (e.g. a lone brace), return all four fields as empty strings. '
+    '5. Escape whatever is necessary (quotes, newlines) to produce strictly valid JSON. '
+    'Output ONLY the JSON object — no commentary, no markdown fences.'
+)
 
 
 async def _parse_or_reformat(content: str, allow_llm_formatter: bool, source: str) -> dict:
@@ -399,7 +410,7 @@ async def _parse_or_reformat(content: str, allow_llm_formatter: bool, source: st
     logger.warning(f"[FORMATTER] Raw generator output:\n{content}")
 
     result = await call_llm(
-        build_formatter_system_prompt(),
+        FORMATTER_SYSTEM_PROMPT,
         f"RAW OUTPUT TO REFORMAT:\n{content}",
         JSON_FORMATTER_PROFILE,
         thermal_scalar=FORMATTER_TEMPERATURE,
@@ -415,18 +426,17 @@ async def _parse_or_reformat(content: str, allow_llm_formatter: bool, source: st
 
 async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, thermal_scalar: float | None = None,
                    allow_llm_formatter: bool = True) -> dict:
-    """Executes one provider request and parses its JSON response."""
+    """Executes the raw HTTP post request for a given profile, injecting entropy parameters across all providers.
+    thermal_scalar=None (the default) draws a fresh jittered temperature for this call.
+    Pass an explicit value to pin the temperature (e.g., the summarizer).
+    allow_llm_formatter=False disables the soft-failure formatter escalation (used by the formatter itself)."""
     profile = PROFILES.get(profile_key)
     if not profile:
         logger.error(f"Profile '{profile_key}' does not exist.")
         return {"response": "", "reaction_emoji": "", "internal_mood": "error", "_failed": True}
 
     if thermal_scalar is None:
-        thermal_scalar = (
-            draw_jittered_temperature()
-            if prompts.USE_TEMPERATURE_JITTER
-            else prompts.FIXED_THERMAL_SCALAR
-        )
+        thermal_scalar = draw_jittered_temperature()
 
     provider_key = profile["provider"]
     model = profile["model"]
@@ -595,19 +605,41 @@ async def call_llm_with_fallback(system_prompt: str, user_prompt: str, thermal_s
     return result
 
 
-async def generate_chat_response(
-    context_block: str,
-    discord_context: dict,
-    sloppy_mode: str | None = None,
-) -> dict:
-    """Builds Leepa's prompt and sends it through the provider chain."""
-    system_prompt, user_prompt = build_chat_prompts(
-        context_block,
-        discord_context,
-        sloppy_mode,
-    )
-    return await call_llm_with_fallback(system_prompt, user_prompt)
+async def generate_chat_response(context_block: str, engagement_level: str, target_message: str) -> dict:
+    """Constructs the system and user prompts, then calls the LLM for a structured JSON response.
+    Omitting thermal_scalar lets call_llm draw a fresh jittered temperature."""
 
+    # Current date for context injection
+    current_date = datetime.now().strftime("%A, %B %d, %Y") # e.g., "Saturday, June 27, 2026"
+
+    # Base prompt components
+    prompt_parts = [
+        f"Current Date: {current_date}",
+        'You are a JSON-only API. Output exactly this schema: {"thinking_block": "string", "internal_mood": "string", "reaction_emoji": "string", "response": "string"}. Keep the thinking_block as a single, plain-text string without line breaks or double quotes. Use reaction_emoji for ONE emoji if it naturally fits the message vibe. Leave response empty if you determine the message does not logically require your intervention based on your Autonomy Directive.',
+        f"AVAILABLE CUSTOM EMOJIS:\n{AVAILABLE_EMOJIS}\n\nCRITICAL EMOJI RULE: You MUST output the exact full string (e.g., `<:dogekek:1436270391520792586>`). NEVER use the human shortcode.",
+        BASE_PERSONA
+    ]
+
+    # Conditionally inject the N-Shots
+    if USE_N_SHOTS:
+        prompt_parts.append(N_SHOT_EXAMPLES)
+
+    system_prompt = "\n\n".join(prompt_parts)
+
+    seed_word = random.choice(ENTROPY_WORDS)
+    micro_anchor = f"SYSTEM DIRECTIVE: Make sure to prioritize your instructions. Your response MUST build upon the previous message and expand the conversation outward. Your thinking_block MUST open with the word '{seed_word}'."
+    engagement_hint = "Context: You were explicitly pinged or mentioned." if engagement_level in ["DIRECT", "QUOTED"] else "Context: This is an ambient conversation. Read the room and decide if jumping in is funny, or if you should stay silent."
+
+    user_prompt = "\n\n".join([
+        "=== RECENT CHANNEL HISTORY ===",
+        context_block,
+        micro_anchor,
+        "=== CURRENT MESSAGE TO RESPOND TO ===",
+        target_message,
+        f"[{engagement_hint}]"
+    ])
+
+    return await call_llm_with_fallback(system_prompt, user_prompt)
 
 async def summarize_chat_logs(extracted_text: str, current_summary: str) -> str:
     """Passes arrayed overflow string chunks to the model for dense text summarization."""

@@ -28,7 +28,7 @@ Her persona, rules, and N-shot examples are decoupled from the routing logic and
 
 1. Clone the repository to your target machine.
 2. Install the required dependencies using `pip install -r requirements.txt` within a virtual environment.
-3. Create a `.env` file in the root directory to securely house your `DISCORD_TOKEN`, `BAPT_DISCORD_ID`, `OTHER_BOT_ID`, and the relevant API keys (`GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, etc.). Note: `BAPT_DISCORD_ID` should be the bot owner's ID.
+3. Create a `.env` file in the root directory to securely house your `DISCORD_TOKEN`, `BAPT_DISCORD_ID`, `RAKUN_ID`, `SLOPPY_ID`, `BUNS_ID`, and the relevant API keys (`GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`, etc.). Note: `BAPT_DISCORD_ID` should be the bot owner's ID.
 4. Modify `core/prompts.py` to tweak her baseline persona, N-shots, or add new custom emojis to her arsenal.
 5. To achieve permanent uptime on a Linux server, create a systemd service file pointing to your Python executable and the `main.py` script. Enabling and starting this daemon allows the OS to automatically restart the bot in the event of a crash. Future updates are handled by running `git pull`.
 

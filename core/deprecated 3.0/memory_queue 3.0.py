@@ -11,61 +11,28 @@ OVERFLOW_CHUNK_SIZE = 15    # The number of messages sliced off and summarized w
 
 class ShortTermMemory:
     def __init__(self):
-        self.overflow_limit = CORE_MEMORY_SIZE + OVERFLOW_CHUNK_SIZE
+        self.overflow_limit = CORE_MEMORY_SIZE + OVERFLOW_CHUNK_SIZE 
         self.messages = deque()
         self.running_summary = ""
         self.is_summarizing = False
 
-    def add_message(
-        self,
-        author: str,
-        content: str,
-        message_id: int | str | None = None,
-        author_id: int | str | None = None,
-    ):
+    def add_message(self, author: str, content: str):
         """Adds a message to the right side of the queue."""
-        self.messages.append({
-            "message_id": str(message_id) if message_id is not None else None,
-            "author_id": str(author_id) if author_id is not None else None,
-            "author": author,
-            "content": content,
-        })
-
-    def update_message(
-        self,
-        message_id: int | str,
-        author: str,
-        content: str,
-        author_id: int | str | None = None,
-    ) -> bool:
-        """Updates a remembered Discord message without changing its position."""
-        target_id = str(message_id)
-
-        for remembered_message in reversed(self.messages):
-            if remembered_message.get("message_id") != target_id:
-                continue
-
-            remembered_message["author"] = author
-            remembered_message["content"] = content
-            if author_id is not None:
-                remembered_message["author_id"] = str(author_id)
-            return True
-
-        return False
-
+        self.messages.append({"author": author, "content": content})
+        
     def get_context_block(self) -> str:
         """Assembles the payload block, fusing the compressed summary with the raw recent messages."""
         context_parts = []
-
+        
         if self.running_summary:
             context_parts.append(f"[PREVIOUS CONVERSATION SUMMARY: {self.running_summary}]")
-
+            
         context_parts.append("--- RECENT MESSAGES ---")
         for msg in self.messages:
             context_parts.append(f"{msg['author']}: {msg['content']}")
-
+            
         return "\n".join(context_parts)
-
+        
     def extract_overflow_for_summary(self) -> str:
         """
         Slices the oldest messages from the left side of the queue.
@@ -74,17 +41,17 @@ class ShortTermMemory:
         if len(self.messages) >= self.overflow_limit and not self.is_summarizing:
             self.is_summarizing = True
             extracted_text = []
-
+            
             # Pop the oldest messages from the left of the deque based on the defined chunk size
             for _ in range(OVERFLOW_CHUNK_SIZE):
                 if self.messages:
                     msg = self.messages.popleft()
                     extracted_text.append(f"{msg['author']}: {msg['content']}")
-
+                    
             return "\n".join(extracted_text)
-
+            
         return ""
-
+        
     def update_running_summary(self, new_summary: str):
         """Unlocks the queue and updates the persistent memory state."""
         self.running_summary = new_summary

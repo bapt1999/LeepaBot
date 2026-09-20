@@ -40,10 +40,9 @@ class PrettyFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         color = self.LEVEL_COLORS.get(record.levelno, self.RESET)
         ts = self.formatTime(record, "%H:%M:%S")
-        name = record.name.split(".")[-1]  # short module name, e.g. 'api_handler'
+        name = record.name.split(".")[-1]
         msg = record.getMessage()
 
-        # Tint the whole message for WARNING and above so failures pop visually.
         if record.levelno >= logging.WARNING:
             msg = self._paint(msg, color)
 
@@ -74,7 +73,6 @@ def setup_logging():
     root.addHandler(handler)
     root.setLevel(level)
 
-    # These libraries log a line per HTTP request/heartbeat; keep them out of the way.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("discord").setLevel(logging.WARNING)
@@ -84,7 +82,7 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 # Imported after logging is configured so the logic layer inherits the handler.
-from core.logic import process_message
+from core.logic import process_message, process_message_edit
 
 TOKEN = os.getenv('DISCORD_TOKEN')
 
@@ -93,11 +91,13 @@ intents.message_content = True
 
 client = discord.Client(intents=intents)
 
+
 @client.event
 async def on_ready():
     logger.info(f"Logged in as {client.user}")
     for guild in client.guilds:
         logger.info(f"In guild: {guild.name} (ID: {guild.id})")
+
 
 @client.event
 async def on_message(message):
@@ -106,5 +106,29 @@ async def on_message(message):
 
     # The logic layer handles all Discord actions (replies, reactions) itself.
     await process_message(message, client.user)
+
+
+@client.event
+async def on_raw_message_edit(payload):
+    channel = client.get_channel(payload.channel_id)
+
+    if channel is None:
+        try:
+            channel = await client.fetch_channel(payload.channel_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+            logger.info(f"Could not load channel for edited message {payload.message_id}: {exc}")
+            return
+
+    if not hasattr(channel, "fetch_message"):
+        return
+
+    try:
+        message = await channel.fetch_message(payload.message_id)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+        logger.info(f"Could not load edited message {payload.message_id}: {exc}")
+        return
+
+    await process_message_edit(message, client.user)
+
 
 client.run(TOKEN)
