@@ -8,11 +8,10 @@ import time
 from dotenv import load_dotenv
 from core import prompts
 from core.api_handler import generate_chat_response, summarize_chat_logs
-from core.bot_registry import RAKUN_ID, SLOPPY_ID
+from core.bot_registry import RAKUN_ID, is_non_conversational_bot
 from core.discord_context import collect_discord_context
 from core.memory_queue import ShortTermMemory
 from core.image_analysis import analyze_image
-from core.reply_chain_tracker import ReplyChainTracker
 
 # Initializes logging and loads environment variables from the .env file.
 logger = logging.getLogger(__name__)
@@ -24,15 +23,12 @@ BAPT_DISCORD_ID = int(os.getenv('BAPT_DISCORD_ID', 0))
 # Global dictionaries to track state across async operations.
 active_processing_locks = {}
 active_channel_memories = {}
+active_bot_channels = set()
+bot_reply_cooldowns = {}
 
-# Rakun chains usually stop after one Leepa reply, but can occasionally run longer.
-RAKUN_CHAIN_CAPS = (1, 2, 3, 4)
-RAKUN_CHAIN_WEIGHTS = (70, 20, 8, 2)
-rakun_reply_chains = ReplyChainTracker(
-    caps=RAKUN_CHAIN_CAPS,
-    weights=RAKUN_CHAIN_WEIGHTS,
-    label="Rakun",
-)
+# Each reply to a bot usually ends the exchange for a minute.
+BOT_REPLY_PAUSE_CHANCE = 0.80
+BOT_REPLY_PAUSE_SECONDS = 60.0
 
 # Pre-compiled regular expressions for identifying specific target users or names.
 # IGNORECASE handles casing; searches run directly on the raw message content.
@@ -45,10 +41,47 @@ VALID_IMAGE_TYPES = {'image/png', 'image/jpeg', 'image/webp'}
 
 
 def get_channel_memory(channel_id: int) -> ShortTermMemory:
-    """Retrieves or instantiates an isolated memory queue for a specific Discord channel."""
+    """Retrieves or instantiates an isolated memory queue for a specific channel."""
     if channel_id not in active_channel_memories:
         active_channel_memories[channel_id] = ShortTermMemory()
     return active_channel_memories[channel_id]
+
+
+def is_discord_bot(message) -> bool:
+    return bool(getattr(message.author, "bot", False))
+
+
+def bot_conversation_key(message) -> tuple[int, int]:
+    return message.channel.id, message.author.id
+
+
+def bot_reply_is_paused(conversation_key: tuple[int, int]) -> bool:
+    expires_at = bot_reply_cooldowns.get(conversation_key)
+    if expires_at is None:
+        return False
+
+    if time.monotonic() >= expires_at:
+        del bot_reply_cooldowns[conversation_key]
+        return False
+
+    return True
+
+
+def maybe_pause_bot_replies(
+    conversation_key: tuple[int, int],
+    bot_name: str,
+) -> None:
+    if random.random() < BOT_REPLY_PAUSE_CHANCE:
+        bot_reply_cooldowns[conversation_key] = (
+            time.monotonic() + BOT_REPLY_PAUSE_SECONDS
+        )
+        logger.info(
+            "Pausing replies to %s for %.0f seconds.",
+            bot_name,
+            BOT_REPLY_PAUSE_SECONDS,
+        )
+    else:
+        logger.info("Bot exchange with %s may continue.", bot_name)
 
 
 def get_sloppy_mode(content: str) -> str | None:
@@ -112,7 +145,10 @@ def evaluate_message_context(
     is_mentioned = bot_user in message.mentions
     is_replied_to = referenced_author_id == bot_user.id
     is_named = bool(REGEX_NAMED.search(content))
-    is_creator_vip = (message.author.id == BAPT_DISCORD_ID) and bool(REGEX_VIP.search(content))
+    is_creator_vip = (
+        message.author.id == BAPT_DISCORD_ID
+        and bool(REGEX_VIP.search(content))
+    )
 
     engagement_level = "AMBIENT"
     if is_mentioned or is_named or is_creator_vip:
@@ -123,7 +159,7 @@ def evaluate_message_context(
     # ---------------------------------------------------------
     # PROBABILITY EXECUTION MATRIX
     # ---------------------------------------------------------
-    is_rakun = (message.author.id == RAKUN_ID and RAKUN_ID != 0)
+    is_rakun = message.author.id == RAKUN_ID and RAKUN_ID != 0
     should_trigger = False
 
     if engagement_level in ["DIRECT", "QUOTED"]:
@@ -139,12 +175,18 @@ def evaluate_message_context(
 
 
 async def background_summarize(local_memory, extracted_text: str):
-    """Offloads the dense memory compression task to a non-blocking background thread."""
+    """Offloads memory compression to a non-blocking background thread."""
     try:
-        new_summary = await summarize_chat_logs(extracted_text, local_memory.running_summary)
+        new_summary = await summarize_chat_logs(
+            extracted_text,
+            local_memory.running_summary,
+        )
         if new_summary:
             local_memory.update_running_summary(new_summary)
-            logger.info(f"Memory compressed. Active summary length: {len(new_summary)} characters.")
+            logger.info(
+                f"Memory compressed. Active summary length: "
+                f"{len(new_summary)} characters."
+            )
         else:
             local_memory.is_summarizing = False
     except Exception as e:
@@ -153,17 +195,14 @@ async def background_summarize(local_memory, extracted_text: str):
 
 
 async def process_message_edit(message, bot_user) -> None:
-    """Updates the original memory entry without treating an edit as a new message."""
+    """Updates the original memory entry without treating an edit as new."""
     if message.author.id == bot_user.id:
         return
 
     content_payload, _ = await build_message_payload(message)
     local_memory = get_channel_memory(message.channel.id)
-    is_sloppy = (
-        prompts.USE_SLOPPY
-        and message.author.id == SLOPPY_ID
-        and SLOPPY_ID != 0
-    )
+    is_tool_bot = is_non_conversational_bot(message.author.id)
+
     updated = local_memory.update_message(
         message.id,
         message.author.display_name,
@@ -171,7 +210,7 @@ async def process_message_edit(message, bot_user) -> None:
         author_id=message.author.id,
     )
 
-    if not updated and is_sloppy:
+    if not updated and is_tool_bot:
         local_memory.add_message(
             message.author.display_name,
             content_payload,
@@ -181,10 +220,14 @@ async def process_message_edit(message, bot_user) -> None:
 
         overflow_text = local_memory.extract_overflow_for_summary()
         if overflow_text:
-            asyncio.create_task(background_summarize(local_memory, overflow_text))
+            asyncio.create_task(
+                background_summarize(local_memory, overflow_text)
+            )
 
-    if not updated and not is_sloppy:
-        logger.info(f"Edited message {message.id} is no longer in short-term memory.")
+    if not updated and not is_tool_bot:
+        logger.info(
+            f"Edited message {message.id} is no longer in short-term memory."
+        )
         return
 
     channel_label = getattr(message.channel, "name", "DM")
@@ -196,29 +239,45 @@ async def process_message_edit(message, bot_user) -> None:
 
 
 async def process_message(message, bot_user) -> None:
-    """Primary pipeline for handling incoming Discord events and routing them to the external AI API."""
+    """Handles incoming Discord events and routes them to the external AI API."""
     current_time = time.time()
+    incoming_is_bot = is_discord_bot(message)
+    incoming_is_tool_bot = is_non_conversational_bot(message.author.id)
+    incoming_is_chat_bot = incoming_is_bot and not incoming_is_tool_bot
 
     # ---------------------------------------------------------
     # STATE CLEANUP (GHOST LOCKS)
     # ---------------------------------------------------------
-    expired_keys = [k for k, v in active_processing_locks.items() if current_time > v.get("expires", 0)]
-    for k in expired_keys:
-        del active_processing_locks[k]
+    expired_keys = [
+        key
+        for key, value in active_processing_locks.items()
+        if current_time > value.get("expires", 0)
+    ]
+    for key in expired_keys:
+        del active_processing_locks[key]
 
-    # If Rakun replies to a message Leepa is still processing, flip its kill-switch.
-    if message.author.id == RAKUN_ID and RAKUN_ID != 0 and message.reference:
+    # A chatbot replying first can cancel Leepa's pending ambient response.
+    if incoming_is_chat_bot and message.reference:
         target_id = message.reference.message_id
         lock_data = active_processing_locks.get(target_id)
+
         if lock_data and lock_data["status"] != "IMMUNE":
             active_processing_locks[target_id]["status"] = True
-            logger.info(f"Concurrent response detected for message {target_id}. Aborting execution.")
+            logger.info(
+                "Concurrent response from %s detected for message %s. "
+                "Aborting execution.",
+                message.author.display_name,
+                target_id,
+            )
 
     # Attachments enter memory even when the message does not trigger Leepa.
     content_payload, image_descriptions = await build_message_payload(message)
 
     channel_label = getattr(message.channel, "name", "DM")
-    logger.info(f">>> INCOMING [#{channel_label}] {message.author.display_name}: {content_payload}")
+    logger.info(
+        f">>> INCOMING [#{channel_label}] "
+        f"{message.author.display_name}: {content_payload}"
+    )
 
     local_memory = get_channel_memory(message.channel.id)
 
@@ -229,18 +288,6 @@ async def process_message(message, bot_user) -> None:
         image_descriptions,
     )
 
-    rakun_chain_id = None
-    if message.author.id == RAKUN_ID and RAKUN_ID != 0:
-        referenced_message_id = (
-            message.reference.message_id
-            if message.reference is not None
-            else None
-        )
-        rakun_chain_id = rakun_reply_chains.register_incoming(
-            message.id,
-            referenced_message_id,
-        )
-
     local_memory.add_message(
         message.author.display_name,
         content_payload,
@@ -250,11 +297,25 @@ async def process_message(message, bot_user) -> None:
 
     overflow_text = local_memory.extract_overflow_for_summary()
     if overflow_text:
-        asyncio.create_task(background_summarize(local_memory, overflow_text))
+        asyncio.create_task(
+            background_summarize(local_memory, overflow_text)
+        )
 
-    # Sloppy is a tool. Its status and result messages remain visible in memory
-    # but never enter the conversational response pipeline.
-    if prompts.USE_SLOPPY and message.author.id == SLOPPY_ID and SLOPPY_ID != 0:
+    # Tool output remains visible in memory but never starts a conversation.
+    if incoming_is_tool_bot:
+        return
+
+    bot_key = (
+        bot_conversation_key(message)
+        if incoming_is_chat_bot
+        else None
+    )
+
+    if bot_key is not None and bot_reply_is_paused(bot_key):
+        logger.info(
+            "Ignoring %s while its reply pause is active.",
+            message.author.display_name,
+        )
         return
 
     sloppy_mode = get_sloppy_mode(message.content)
@@ -268,18 +329,30 @@ async def process_message(message, bot_user) -> None:
     if not should_trigger:
         return
 
-    rakun_generation_reserved = False
-    if rakun_chain_id is not None:
-        rakun_generation_reserved = rakun_reply_chains.try_reserve_generation(
-            rakun_chain_id
-        )
-        if not rakun_generation_reserved:
-            logger.info("Rakun reply chain %s is busy or has reached its cap.", rakun_chain_id)
+    bot_channel_reserved = False
+    if incoming_is_chat_bot:
+        channel_id = message.channel.id
+
+        if channel_id in active_bot_channels:
+            logger.info(
+                "Another bot message is already being handled in channel %s.",
+                channel_id,
+            )
             return
 
-    # Direct engagement automatically grants lock immunity. Locks expire after 60 seconds.
-    lock_status = "IMMUNE" if engagement_level in ["DIRECT", "QUOTED"] else False
-    active_processing_locks[message.id] = {"status": lock_status, "expires": current_time + 60.0}
+        active_bot_channels.add(channel_id)
+        bot_channel_reserved = True
+
+    # Direct engagement makes this response immune to the concurrency kill-switch.
+    lock_status = (
+        "IMMUNE"
+        if engagement_level in ["DIRECT", "QUOTED"]
+        else False
+    )
+    active_processing_locks[message.id] = {
+        "status": lock_status,
+        "expires": current_time + 60.0,
+    }
 
     try:
         response_data = await generate_chat_response(
@@ -287,83 +360,97 @@ async def process_message(message, bot_user) -> None:
             discord_context,
             sloppy_mode,
         )
-    except Exception:
-        if rakun_generation_reserved:
-            rakun_reply_chains.release_generation(rakun_chain_id)
-        raise
 
-    logger.info(f"<<< OUTGOING\n{json.dumps(response_data, indent=2, ensure_ascii=False)}")
+        logger.info(
+            f"<<< OUTGOING\n"
+            f"{json.dumps(response_data, indent=2, ensure_ascii=False)}"
+        )
 
-    # Matrix Kill-Switch Check. pop() removes the lock in a single step regardless of outcome.
-    if active_processing_locks.pop(message.id, {}).get("status") is True:
-        if rakun_generation_reserved:
-            rakun_reply_chains.release_generation(rakun_chain_id)
-        return
+        # pop() removes the lock regardless of whether execution is aborted.
+        if active_processing_locks.pop(message.id, {}).get("status") is True:
+            return
 
-    reply_text = response_data.get("response", "").strip()
-    reaction_emoji = response_data.get("reaction_emoji", "").strip() if prompts.USE_EMOJI_REACTIONS else ""
-    internal_mood = response_data.get("internal_mood", "neutral").strip()
-    thinking_block = response_data.get("thinking_block", "").strip() if prompts.USE_THINKING_BLOCK else ""
+        reply_text = response_data.get("response", "").strip()
+        reaction_emoji = (
+            response_data.get("reaction_emoji", "").strip()
+            if prompts.USE_EMOJI_REACTIONS
+            else ""
+        )
+        internal_mood = response_data.get(
+            "internal_mood",
+            "neutral",
+        ).strip()
+        thinking_block = (
+            response_data.get("thinking_block", "").strip()
+            if prompts.USE_THINKING_BLOCK
+            else ""
+        )
 
-    if reaction_emoji and not prompts.USE_CUSTOM_EMOJIS and REGEX_CUSTOM_EMOJI.fullmatch(reaction_emoji):
-        logger.info("Custom emoji ignored because USE_CUSTOM_EMOJIS is disabled.")
-        reaction_emoji = ""
-
-    # 1. Execute physical Discord actions
-    if reaction_emoji:
-        try:
-            await message.add_reaction(reaction_emoji)
-        except Exception as e:
-            logger.error(f"Discord API failure on add_reaction: {e}")
-
-    sent_reply = None
-    if reply_text:
-        try:
-            sent_reply = await message.reply(reply_text)
-        except Exception as e:
-            logger.error(f"Discord API failure on message reply: {e}")
-
-    if rakun_generation_reserved:
-        sent_reply_id = getattr(sent_reply, "id", None)
-        if sent_reply_id is None:
-            rakun_reply_chains.release_generation(rakun_chain_id)
-        else:
-            chain_progress = rakun_reply_chains.record_reply(
-                rakun_chain_id,
-                sent_reply_id,
+        if (
+            reaction_emoji
+            and not prompts.USE_CUSTOM_EMOJIS
+            and REGEX_CUSTOM_EMOJI.fullmatch(reaction_emoji)
+        ):
+            logger.info(
+                "Custom emoji ignored because USE_CUSTOM_EMOJIS is disabled."
             )
-            if chain_progress is not None:
-                replies_sent, reply_cap = chain_progress
-                logger.info(
-                    "Rakun reply chain %s: Leepa reply %s/%s.",
-                    rakun_chain_id,
-                    replies_sent,
-                    reply_cap,
+            reaction_emoji = ""
+
+        # 1. Execute physical Discord actions.
+        if reaction_emoji:
+            try:
+                await message.add_reaction(reaction_emoji)
+            except Exception as e:
+                logger.error(
+                    f"Discord API failure on add_reaction: {e}"
                 )
 
-    # 2. Construct the dense internal state string for the STM.
-    # NOTE: Infrastructure moods (rate_limit, timeout, etc.) are intentionally
-    # logged into memory. This lets Leepa acknowledge her own outages in-character
-    # and doubles as a live debugging trace on the VM console.
-    state_parts = []
-    if thinking_block:
-        state_parts.append(f"Thought: {thinking_block}")
-    if internal_mood:
-        state_parts.append(f"Mood: {internal_mood}")
-    if reaction_emoji:
-        state_parts.append(f"Emoji: {reaction_emoji}")
+        sent_reply = None
+        reply_was_sent = False
 
-    state_tag = f"[{' | '.join(state_parts)}]\n" if state_parts else ""
+        if reply_text:
+            try:
+                sent_reply = await message.reply(reply_text)
+                reply_was_sent = True
+            except Exception as e:
+                logger.error(
+                    f"Discord API failure on message reply: {e}"
+                )
 
-    # 3. Log to memory, enforcing object permanence for silences
-    if reply_text:
-        memory_log = f"{state_tag}{reply_text}"
-    else:
-        memory_log = f"{state_tag}(Silence)"
+        if reply_was_sent and bot_key is not None:
+            maybe_pause_bot_replies(
+                bot_key,
+                message.author.display_name,
+            )
 
-    local_memory.add_message(
-        "Leepa",
-        memory_log,
-        message_id=getattr(sent_reply, "id", None),
-        author_id=bot_user.id,
-    )
+        # 2. Construct the internal state string for short-term memory.
+        state_parts = []
+
+        if thinking_block:
+            state_parts.append(f"Thought: {thinking_block}")
+        if internal_mood:
+            state_parts.append(f"Mood: {internal_mood}")
+        if reaction_emoji:
+            state_parts.append(f"Emoji: {reaction_emoji}")
+
+        state_tag = (
+            f"[{' | '.join(state_parts)}]\n"
+            if state_parts
+            else ""
+        )
+
+        # 3. Preserve Leepa's response or deliberate silence in memory.
+        if reply_text:
+            memory_log = f"{state_tag}{reply_text}"
+        else:
+            memory_log = f"{state_tag}(Silence)"
+
+        local_memory.add_message(
+            "Leepa",
+            memory_log,
+            message_id=getattr(sent_reply, "id", None),
+            author_id=bot_user.id,
+        )
+    finally:
+        if bot_channel_reserved:
+            active_bot_channels.discard(message.channel.id)
