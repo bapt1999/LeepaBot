@@ -45,15 +45,31 @@ PROFILES = {
     "deepseek_v41_siliconflow": {
         "provider": "siliconflow",
         "model": "deepseek-ai/DeepSeek-V4.1-Flash",
-        "capabilities": {"native_thinking": False, "temp_scalar": 1.9},
-        "extra_payload": {"enable_thinking": False},
+        "capabilities": {
+            "native_thinking": False,
+            "temp_scalar": 1.0,
+            "max_temperature": 1.0,
+        },
+        "extra_payload": {
+            "enable_thinking": False,
+            "top_p": 0.95,
+            "frequency_penalty": 0.0,
+        },
         "omit_payload_fields": ("presence_penalty",),
     },
     "deepseek_v41_openrouter": {
         "provider": "openrouter",
         "model": "deepseek/deepseek-v4.1-flash",
-        "capabilities": {"native_thinking": False, "temp_scalar": 1.4},
-        "extra_payload": {"reasoning": {"enabled": False}},
+        "capabilities": {
+            "native_thinking": False,
+            "temp_scalar": 1.0,
+            "max_temperature": 1.0,
+        },
+        "extra_payload": {
+            "reasoning": {"enabled": False},
+            "top_p": 0.95,
+            "frequency_penalty": 0.0,
+        },
         "omit_payload_fields": ("presence_penalty",),
         "provider_routing": {
             "order": ["siliconflow", "crusoe"],
@@ -128,8 +144,7 @@ PROVIDERS = {
     "siliconflow": {"url": "https://api.siliconflow.com/v1", "key": os.getenv("SILICONFLOW_API_KEY")},
 }
 
-# Each profile scales this normalized range to its model's useful band.
-# SiliconFlow DeepSeek: 0.86–2.00; OpenRouter DeepSeek: 0.63–1.47.
+# Requests without an assembly use this range, then the profile's scale and cap.
 TEMP_JITTER_RANGE = (0.45, 1.05)
 
 # Memory compression must stay deterministic and factual. Never jitter this.
@@ -483,8 +498,11 @@ async def call_llm(
         logger.error(f"Provider '{provider_key}' is not configured or missing API key.")
         return {"response": "", "reaction_emoji": "", "internal_mood": "error", "_failed": True}
 
-    # Scale the normalized draw to the provider's band. Computed once, provider-agnostic.
+    # Apply this profile's scale and optional temperature cap.
     final_temp = round(thermal_scalar * capabilities.get("temp_scalar", 1.0), 2)
+    max_temp = capabilities.get("max_temperature")
+    if max_temp is not None:
+        final_temp = min(final_temp, max_temp)
     logger.info(f"[SAMPLING] {profile_key} → {model} | temp={final_temp} (norm={thermal_scalar})")
 
     client = await get_http_client()
