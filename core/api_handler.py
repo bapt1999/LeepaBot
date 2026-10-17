@@ -5,12 +5,17 @@ import re
 import asyncio
 import logging
 import random
+from typing import Callable
 from dotenv import load_dotenv
 from core import prompts
 from core.prompt_builder import (
+    build_prompt_assembler_prompts,
     build_chat_prompts,
+    default_prompt_assembly,
+    draw_prompt_assembly_temperature,
     expected_string_fields,
     output_schema_example,
+    prompt_assembly_ids,
 )
 
 load_dotenv()
@@ -21,42 +26,70 @@ logger = logging.getLogger(__name__)
 # API error). Soft failures — the model produced text but not valid JSON — do
 # NOT trigger this chain; they go to the LLM formatter instead, preserving the
 # primary model's actual words.
-PROFILE_CHAIN = ["deepseek_siliconflow", "deepseek_openrouter", "gemini_flash"]
+PROFILE_CHAIN = [
+    "deepseek_v41_siliconflow",
+    "deepseek_v41_openrouter",
+    "deepseek_openrouter",
+    "gemini_flash",
+]
 
 # The formatter repairs malformed JSON without rewriting Leepa's words.
 JSON_FORMATTER_PROFILE = "gemini_flash"
 FORMATTER_TEMPERATURE = 0.05
 
+# This call only chooses a prompt assembly. It never writes Leepa's response.
+PROMPT_ASSEMBLER_PROFILE = "prompt_assembler"
+PROMPT_ASSEMBLER_TEMPERATURE = 0.10
+
 PROFILES = {
-    "groq_llama": {
-        "provider": "groq",
-        "model": "llama-3.1-8b-instant",
-        "capabilities": {"native_thinking": False, "temp_scalar": 0.9}
+    "deepseek_v41_siliconflow": {
+        "provider": "siliconflow",
+        "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "capabilities": {"native_thinking": False, "temp_scalar": 1.9},
+        "extra_payload": {"enable_thinking": False},
+        "omit_payload_fields": ("presence_penalty",),
     },
-    "groq_qwen": {
-        "provider": "groq",
-        "model": "qwen/qwen3-32b",
-        "capabilities": {"native_thinking": False, "temp_scalar": 0.9}
-    },
-    "openrouter_qwen": {
+    "deepseek_v41_openrouter": {
         "provider": "openrouter",
-        "model": "qwen/qwen3-next-80b-a3b-instruct:free",
-        "capabilities": {"native_thinking": False, "temp_scalar": 0.9}
+        "model": "deepseek/deepseek-v4.1-flash",
+        "capabilities": {"native_thinking": False, "temp_scalar": 1.4},
+        "extra_payload": {"reasoning": {"enabled": False}},
+        "omit_payload_fields": ("presence_penalty",),
+        "provider_routing": {
+            "order": ["siliconflow", "crusoe"],
+            "allow_fallbacks": True,
+            "require_parameters": True,
+            "ignore": ["novita"],
+        },
     },
     "deepseek_siliconflow": {
         "provider": "siliconflow",
         "model": "deepseek-ai/DeepSeek-V3",
-        "capabilities": {"native_thinking": False, "temp_scalar": 1.9}
+        "capabilities": {"native_thinking": False, "temp_scalar": 1.9},
+        "omit_payload_fields": ("presence_penalty",),
     },
     "deepseek_openrouter": {
         "provider": "openrouter",
         "model": "deepseek/deepseek-chat-v3-0324",
         "capabilities": {"native_thinking": False, "temp_scalar": 1.4},
         "provider_routing": {
-            "order": ["siliconflow", "crusoe"],
+            "order": ["siliconflow"],
             "allow_fallbacks": True,
             "ignore": ["novita"]  # NovitaAI ignores JSON formatting entirely.
         }
+    },
+    "prompt_assembler": {
+        "provider": "openrouter",
+        "model": "deepseek/deepseek-chat-v3-0324",
+        "capabilities": {"native_thinking": False, "temp_scalar": 1.0},
+        "extra_payload": {
+            "max_tokens": 160,
+        },
+        "omit_payload_fields": ("frequency_penalty", "presence_penalty"),
+        "provider_routing": {
+            "allow_fallbacks": True,
+            "require_parameters": True,
+        },
     },
     "deepseek_v4_flash": {
         "provider": "openrouter",
@@ -84,11 +117,6 @@ PROFILES = {
         "provider": "gemini",
         "model": "gemini-3-flash-preview",
         "capabilities": {"native_thinking": True, "temp_scalar": 1.8}
-    },
-    "deepseek_chat": {
-        "provider": "deepseek",
-        "model": "deepseek-chat",
-        "capabilities": {"native_thinking": False, "temp_scalar": 0.9}
     }
 }
 
@@ -297,11 +325,8 @@ def _has_meaningful_text(content: str) -> bool:
     return bool(re.sub(r'[\s{}\[\]().,:;"\'`\\-]+', '', content))
 
 
-def parse_json_payload(content: str) -> dict:
-    """Turns a raw LLM output string into a usable schema dict, trying
-    progressively more aggressive salvage strategies. Raises ValueError only
-    when nothing object-shaped can be recovered; callers then either escalate
-    to the LLM formatter or fail open."""
+def parse_json_object(content: str) -> dict:
+    """Recovers the first JSON object from a model response."""
     raw = content.strip()
     raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
     raw = re.sub(r"\s*```$", "", raw)
@@ -326,9 +351,24 @@ def parse_json_payload(content: str) -> dict:
                     f"JSON salvage engaged (candidate #{cand_idx}, repaired={repaired}). "
                     f"Raw output was not a clean object:\n{content.strip()}"
                 )
-            return _normalize_fields(found)
+            return found
 
     raise ValueError("No JSON object could be salvaged from model output.")
+
+
+def parse_json_payload(content: str) -> dict:
+    """Turns a raw Leepa response into the active output schema."""
+    return _normalize_fields(parse_json_object(content))
+
+
+def parse_prompt_assembler_payload(content: str) -> dict:
+    data = parse_json_object(content)
+    assembly_id = data.get("assembly_id", "")
+    reason = data.get("reason", "")
+    return {
+        "assembly_id": str(assembly_id).strip(),
+        "reason": str(reason).strip(),
+    }
 
 
 def handle_error_response(error: dict) -> dict:
@@ -413,8 +453,14 @@ async def _parse_or_reformat(content: str, allow_llm_formatter: bool, source: st
     return result
 
 
-async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, thermal_scalar: float | None = None,
-                   allow_llm_formatter: bool = True) -> dict:
+async def call_llm(
+    system_prompt: str,
+    user_prompt: str,
+    profile_key: str,
+    thermal_scalar: float | None = None,
+    allow_llm_formatter: bool = True,
+    content_parser: Callable[[str], dict] | None = None,
+) -> dict:
     """Executes one provider request and parses its JSON response."""
     profile = PROFILES.get(profile_key)
     if not profile:
@@ -472,6 +518,8 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
                 return handle_error_response(result["error"])
 
             content = result["candidates"][0]["content"]["parts"][0]["text"]
+            if content_parser is not None:
+                return content_parser(content)
             return await _parse_or_reformat(content, allow_llm_formatter, f"{provider_key}|{model}")
 
         except Exception as e:
@@ -513,10 +561,12 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
             if routing:
                 payload["provider"] = routing
 
-        # Per-profile payload extensions (e.g. disabling V4's native reasoning).
+        # Per-profile request settings and unsupported parameters.
         extra = profile.get("extra_payload")
         if extra:
             payload.update(extra)
+        for field in profile.get("omit_payload_fields", ()):
+            payload.pop(field, None)
 
         content = None
         try:
@@ -545,6 +595,8 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
                 return handle_error_response(pseudo_error)
 
             content = result["choices"][0]["message"]["content"]
+            if content_parser is not None:
+                return content_parser(content)
             return await _parse_or_reformat(content, allow_llm_formatter, f"{provider_key}|{model}")
 
         except httpx.TimeoutException as e:
@@ -555,6 +607,50 @@ async def call_llm(system_prompt: str, user_prompt: str, profile_key: str, therm
             if content is not None:
                 logger.error(f"Raw content that failed to parse:\n{content}")
             return {"response": "", "reaction_emoji": "", "internal_mood": "unknown_error", "_failed": True}
+
+
+async def select_prompt_assembly(
+    context_block: str,
+    discord_context: dict,
+) -> str:
+    """Asks the dedicated model to choose one approved prompt assembly."""
+    fallback_id = default_prompt_assembly()["id"]
+    system_prompt, user_prompt = build_prompt_assembler_prompts(
+        context_block,
+        discord_context,
+    )
+
+    result = await call_llm(
+        system_prompt,
+        user_prompt,
+        PROMPT_ASSEMBLER_PROFILE,
+        thermal_scalar=PROMPT_ASSEMBLER_TEMPERATURE,
+        allow_llm_formatter=False,
+        content_parser=parse_prompt_assembler_payload,
+    )
+
+    if result.get("_failed"):
+        logger.warning(
+            "[PROMPT ASSEMBLER] Selection failed. Using '%s'.",
+            fallback_id,
+        )
+        return fallback_id
+
+    assembly_id = result.get("assembly_id", "")
+    if assembly_id not in prompt_assembly_ids():
+        logger.warning(
+            "[PROMPT ASSEMBLER] Unknown selection %r. Using '%s'.",
+            assembly_id,
+            fallback_id,
+        )
+        return fallback_id
+
+    logger.info(
+        "[PROMPT ASSEMBLER] Selected '%s': %s",
+        assembly_id,
+        result.get("reason", "No reason supplied."),
+    )
+    return assembly_id
 
 async def call_llm_with_fallback(system_prompt: str, user_prompt: str, thermal_scalar: float | None = None) -> dict:
     """Walks PROFILE_CHAIN in order, returning the first successful response.
@@ -601,13 +697,28 @@ async def generate_chat_response(
     sloppy_mode: str | None = None,
 ) -> dict:
     """Builds Leepa's prompt and sends it through the provider chain."""
+    prompt_assembly_id = None
+    thermal_scalar = None
+
+    # Forced Sloppy modes already have a narrow prompt and exact output shape.
+    if prompts.USE_PROMPT_ASSEMBLER and sloppy_mode is None:
+        prompt_assembly_id = await select_prompt_assembly(
+            context_block,
+            discord_context,
+        )
+        thermal_scalar = draw_prompt_assembly_temperature(prompt_assembly_id)
+
     system_prompt, user_prompt = build_chat_prompts(
         context_block,
         discord_context,
         sloppy_mode,
+        prompt_assembly_id,
     )
-    return await call_llm_with_fallback(system_prompt, user_prompt)
-
+    return await call_llm_with_fallback(
+        system_prompt,
+        user_prompt,
+        thermal_scalar=thermal_scalar,
+    )
 
 async def summarize_chat_logs(extracted_text: str, current_summary: str) -> str:
     """Passes arrayed overflow string chunks to the model for dense text summarization."""

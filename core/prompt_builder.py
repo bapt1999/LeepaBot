@@ -29,6 +29,61 @@ def n_shots_enabled() -> bool:
     ))
 
 
+def get_prompt_assembly(assembly_id: str | None) -> dict | None:
+    if not assembly_id:
+        return None
+
+    for assembly in prompts.PROMPT_ASSEMBLIES:
+        if assembly["id"] == assembly_id:
+            return assembly
+    return None
+
+
+def default_prompt_assembly() -> dict:
+    assembly = get_prompt_assembly(prompts.DEFAULT_PROMPT_ASSEMBLY)
+    if assembly is None:
+        raise ValueError(
+            "DEFAULT_PROMPT_ASSEMBLY must match an entry in PROMPT_ASSEMBLIES."
+        )
+    return assembly
+
+
+def prompt_assembly_ids() -> tuple[str, ...]:
+    return tuple(assembly["id"] for assembly in prompts.PROMPT_ASSEMBLIES)
+
+
+def draw_prompt_assembly_temperature(assembly_id: str) -> float:
+    assembly = get_prompt_assembly(assembly_id) or default_prompt_assembly()
+    low, high = assembly["thermal_range"]
+
+    if prompts.USE_TEMPERATURE_JITTER:
+        return round(random.uniform(low, high), 3)
+    return round((low + high) / 2, 3)
+
+
+def build_prompt_assembler_prompts(
+    context_block: str,
+    discord_context: dict,
+) -> tuple[str, str]:
+    catalog = [
+        {
+            "id": assembly["id"],
+            "description": assembly["description"],
+        }
+        for assembly in prompts.PROMPT_ASSEMBLIES
+    ]
+
+    user_prompt = "\n\n".join([
+        "=== AVAILABLE PROMPT ASSEMBLIES ===",
+        json.dumps(catalog, indent=2, ensure_ascii=False),
+        "=== RECENT CHANNEL HISTORY ===",
+        context_block,
+        "=== CURRENT DISCORD EVENT ===",
+        json.dumps(discord_context, indent=2, ensure_ascii=False),
+    ])
+    return prompts.PROMPT_ASSEMBLER_SYSTEM.strip(), user_prompt
+
+
 def expected_string_fields() -> tuple[str, ...]:
     fields = []
     if prompts.USE_THINKING_BLOCK:
@@ -105,6 +160,7 @@ def build_known_bot_prompt(discord_context: dict) -> str:
 
     prompts_by_bot = {
         "rakun": prompts.PROMPT_RAKUN_RELATIONSHIP,
+        "warro": prompts.PROMPT_WARRO_CONTEXT,
     }
     return prompts_by_bot.get(bot_name, "")
 
@@ -112,6 +168,7 @@ def build_known_bot_prompt(discord_context: dict) -> str:
 def build_system_prompt(
     discord_context: dict | None = None,
     sloppy_mode: str | None = None,
+    prompt_assembly_id: str | None = None,
 ) -> str:
     active_sloppy_mode = (
         sloppy_mode
@@ -141,6 +198,10 @@ def build_system_prompt(
 
     if n_shots_enabled():
         parts.append(prompts.N_SHOT_EXAMPLES)
+
+    prompt_assembly = get_prompt_assembly(prompt_assembly_id)
+    if prompt_assembly:
+        parts.append(prompt_assembly["prompt"])
 
     return "\n\n".join(part.strip() for part in parts if part.strip())
 
@@ -181,8 +242,9 @@ def build_chat_prompts(
     context_block: str,
     discord_context: dict,
     sloppy_mode: str | None = None,
+    prompt_assembly_id: str | None = None,
 ) -> tuple[str, str]:
     return (
-        build_system_prompt(discord_context, sloppy_mode),
+        build_system_prompt(discord_context, sloppy_mode, prompt_assembly_id),
         build_user_prompt(context_block, discord_context, sloppy_mode),
     )
