@@ -18,6 +18,24 @@ def custom_emojis_enabled() -> bool:
     return prompts.USE_EMOJI_REACTIONS and prompts.USE_CUSTOM_EMOJIS
 
 
+def build_available_emoji_list() -> str:
+    """Adds optional descriptions while keeping every available emoji."""
+    entries = []
+    for line in prompts.AVAILABLE_EMOJIS.splitlines():
+        emoji = line.strip()
+        if not emoji:
+            continue
+
+        description = prompts.EMOJI_DESCRIPTIONS.get(emoji, "").strip()
+        entry = emoji
+        if description:
+            notes = "\n".join(f"  {line}" for line in description.splitlines())
+            entry += f"\n{notes}"
+        entries.append(entry)
+
+    return "\n\n".join(entries)
+
+
 def n_shots_enabled() -> bool:
     # The current examples use every optional feature.
     return all((
@@ -183,7 +201,7 @@ def build_system_prompt(
     if custom_emojis_enabled():
         parts.append(
             prompts.PROMPT_CUSTOM_EMOJI_RULE.format(
-                available_emojis=prompts.AVAILABLE_EMOJIS
+                available_emojis=build_available_emoji_list()
             )
         )
 
