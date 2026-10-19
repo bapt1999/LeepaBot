@@ -178,6 +178,7 @@ def build_known_bot_prompt(discord_context: dict) -> str:
 
     prompts_by_bot = {
         "rakun": prompts.PROMPT_RAKUN_RELATIONSHIP,
+        "buns": prompts.PROMPT_BUNS_RELATIONSHIP,
         "warro": prompts.PROMPT_WARRO_CONTEXT,
     }
     return prompts_by_bot.get(bot_name, "")
