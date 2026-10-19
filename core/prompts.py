@@ -108,10 +108,11 @@ You have 4 options available to you. You have permission to utilize the followin
   4. Text + Emoji: Utilize both fields.
   CRITICAL: 'Silence' and 'Emoji Only' are extremely powerful comedic tools. Do not always use text. Sometimes the best response is no response at all, or just a well-timed emoji. Furthermore, analyze the text and decide if you are being directly addressed. If not, you must only react with an emoji or ignore the message entirely. Only respond with text if you are being directly addressed or if the comedic timing demands it.
 - Reaction Variety: Do not use the same reaction_emoji twice in a row. Check your most recent reaction in the channel history and choose a different emoji or leave reaction_emoji empty.
+- Reaction Choice: Consider the full emoji selection. Match the specific joke, subtext, or situation instead of cycling through a few familiar reactions.
 """
 
 PROMPT_RESPONSE_TOOLS_TEXT_ONLY = """# RESPONSE OPTIONS
-You may write a response or remain silent by leaving `response` empty. Understand that both options are powerful. Sometimes, remaining silent is the best option.
+You may write a response or remain silent by leaving `response` empty. Understand that both options are powerful.
 """
 
 PROMPT_CREATIVE_TOOLS = """# CREATIVE TOOLS
@@ -234,9 +235,14 @@ PROMPT_CONSTRAINTS = """# CONSTRAINTS & GUIDELINES
 """
 
 PROMPT_CUSTOM_EMOJI_RULE = """AVAILABLE CUSTOM EMOJIS:
+Each entry begins with the exact emoji string. Any indented text below it describes only that emoji.
+Descriptions explain meanings, intended uses, or how emojis belong together. Follow a description over a misleading name.
+Emojis without descriptions are equally available: use their names and the conversation to interpret them. Having a description does not make an emoji preferred.
+
 {available_emojis}
 
 CRITICAL EMOJI RULE: Output the exact full string (for example, `<:dogekek:1436270391520792586>`), never the human shortcode.
+For reaction_emoji, output one emoji string only, without its description. Joined sets belong together in response text; reaction_emoji cannot contain a whole set.
 """
 
 
@@ -781,3 +787,69 @@ AVAILABLE_EMOJIS = """<:dogekek:1436270391520792586>
 <:uno_plusfour:1490837432248172605>
 <:uno_reverse:1490836905221423114>
 """
+
+
+# Optional notes. Use an exact string from AVAILABLE_EMOJIS as the key.
+# Omit an entry or leave its description empty when no explanation is needed.
+EMOJI_DESCRIPTIONS = {
+    "<:MYHOLE:1440174910629613701>": (
+        "A crude reaction to sexual innuendo, including accidental double meanings. It is an image from The Enigma of Amigara Fault (阿弥殻断層の怪), showing a person yelling 'it´s my hole, it was made for me!'."
+    ),
+    "<:i_am_very_smart:1464195984635461842>": (
+        "Sarcastic or ironic only. Mocks cleverness and people being especially nerdy; it is never used as sincere praise."
+    ),
+    "<:Raccoon1:1490795399957708880>": (
+        "Start of a joined sleeping raccoon. Follow with one or more Raccoon2 "
+        "pieces, then Raccoon3, all adjacent in response text. Always use the "
+        "complete set; do not use this piece alone as a reaction."
+    ),
+    "<:Raccoon2:1490795366306549891>": (
+        "Repeatable middle of the joined sleeping raccoon. Place between "
+        "Raccoon1 and Raccoon3 in response text; repeat it to extend the body. "
+        "Always use the complete set; do not use this piece alone as a reaction."
+    ),
+    "<:Raccoon3:1490795340474089483>": (
+        "End of the joined sleeping raccoon. Finish the sequence after "
+        "Raccoon1 and one or more Raccoon2 pieces, all adjacent in response text. "
+        "Always use the complete set; do not use this piece alone as a reaction."
+    ),
+    "<:dogekek:1436270391520792586>": (
+        "The preferred emoji for reacting to something funny."
+    ),
+    "<:glasses:1440175027491442718>": (
+        "Depitcs a view through glasses that remove clothes. The person shown is Trump. Completely disconnected from nerdiness."
+    ),
+    "<:shithole:1515268879021244487>": (
+        "Use to either talk about your butthole, someone else's butthole, or a place that is a shithole. Invent new uses for this emoji."
+    ),
+    "<:ah_yes:1464203336625684481>": (
+        "Only use this emoji when someone says 'ah yes' in their message."
+    ),
+    "<:stardust:1455163635939672115>": (
+        "Part of the server lore."
+    ),
+    "<:pusheenpopcorn:1481494370447397039>": (
+        "Use this emoji when you are watching drama unfold and want to express that you are entertained. This one is particularly funny when used as a standalone message, not in a react. Only the message being the emoji."
+    ),
+    "<:emoji_28:1436862107969781923>": (
+        "A gif of a woman hitting the screen with a hammer."
+    ),
+    "<:emoji_29:1436862235707445298>": (
+        "A gif of a dancing woman, very satisfied with herself. Use it as a smug mock, or to express that you are pleased with the message."
+    ),
+    "<:emoji_30:1436862291000950868>": (
+        "Thinking Man gif. Show your respect for a clever message."
+    ),
+    "<:emoji_30~1:1436862319270432829>": (
+        "Michael Scott from The Office yelling NOOOOOOOOOOOO"
+    ),
+    "<:take_the_l:1435963270216290406>": (
+        "The depicted L is actually an upside-down L, in the colors of Waluigi. Take the Γ."
+    ),
+    "<:oos:1440175117358600212>": (
+        "The image of a man smoking outside, being so fucking done with life."
+    ),
+    "<:ehoui:1490835909762093299>": (
+        "Une image de Jamy de C'est pas sorcier, qui dit 'eh oui'."
+    )
+}
