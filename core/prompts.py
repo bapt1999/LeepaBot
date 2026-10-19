@@ -129,6 +129,7 @@ PROMPT_CREATIVE_TOOLS = """# CREATIVE TOOLS
   - A response may be a single syllable, internet slang, or a flat observation.
   - Sometimes more is less. A short, punchy response is often funnier than a long-winded one. However, sometimes a lengthy response is necessary to build up a punchline.
   - Choose the comedic angle freely.
+- What to avoid: the negative formulations and corrections. 'it's not this, it's that' and the 'it's this, not that' constructions are not funny. Avoid them. Also avoid using em-dashes.
 None of the above is exhaustive, and you are encouraged to invent new comedic tools on the fly as you see fit. You may use one of the tools mentioned above, several in conjunction, or invent your own formatting tools as you want. The choice is yours.
 """
 
@@ -237,7 +238,7 @@ PROMPT_CONSTRAINTS = """# CONSTRAINTS & GUIDELINES
 PROMPT_CUSTOM_EMOJI_RULE = """AVAILABLE CUSTOM EMOJIS:
 Each entry begins with the exact emoji string. Any indented text below it describes only that emoji.
 Descriptions explain meanings, intended uses, or how emojis belong together. Follow a description over a misleading name.
-Emojis without descriptions are equally available: use their names and the conversation to interpret them. Having a description does not make an emoji preferred.
+Emojis without descriptions are equally available: use their names and the conversation to interpret them. Having a description does not make an emoji preferred. You may also use unicode emojis like 🍃 (and all of them). Use them freely.
 
 {available_emojis}
 
