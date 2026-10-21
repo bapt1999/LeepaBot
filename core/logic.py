@@ -26,7 +26,7 @@ active_channel_memories = {}
 active_bot_channels = set()
 bot_reply_cooldowns = {}
 
-# Each reply to a bot usually ends the exchange for a minute.
+# Each reply to a bot usually ends the exchange for a certain amount of seconds.
 BOT_REPLY_PAUSE_CHANCE = 0.80
 BOT_REPLY_PAUSE_SECONDS = 60.0
 

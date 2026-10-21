@@ -22,14 +22,12 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Ordered fallback chain. The first profile is the primary; each subsequent
-# profile is tried only if the previous one HARD-failed (rate limit, timeout,
-# API error). Soft failures — the model produced text but not valid JSON — do
-# NOT trigger this chain; they go to the LLM formatter instead, preserving the
-# primary model's actual words.
+# profile is tried only if the previous one HARD-failed. Soft failures
+# trigger the formater instead.
 PROFILE_CHAIN = [
+    "deepseek_openrouter",
     "deepseek_v41_siliconflow",
     "deepseek_v41_openrouter",
-    "deepseek_openrouter",
     "gemini_flash",
 ]
 
@@ -109,15 +107,8 @@ PROFILES = {
     },
     "deepseek_v4_flash": {
         "provider": "openrouter",
-        # DeepSeek V4 Flash 0731 (re-post-trained revision, released Jul 31 2026).
-        # 1M context, $0.14/M in, $0.28/M out — cheaper than v3-0324.
         "model": "deepseek/deepseek-v4-flash-0731",
-        # Conservative starting scalar (band 0.63 – 1.47). V4's sampling
-        # behavior at high temp is untested for Leepa's persona; raise slowly.
         "capabilities": {"native_thinking": False, "temp_scalar": 1.4},
-        # V4 Flash is a hybrid reasoning model. Reasoning is explicitly
-        # disabled: Leepa's thinking_block IS her chain-of-thought, and a
-        # native reasoning pass would burn output tokens invisibly.
         "extra_payload": {"reasoning": {"enabled": False}},
         "provider_routing": {
             "allow_fallbacks": True,
@@ -199,13 +190,6 @@ async def get_http_client() -> httpx.AsyncClient:
 # ---------------------------------------------------------
 # JSON SALVAGE PIPELINE
 # ---------------------------------------------------------
-# LLMs — especially at high temperature — do not reliably emit one clean JSON
-# object. Observed and anticipated failure shapes: markdown fences, chatter
-# around the object, the object wrapped in an array, bare lists/scalars,
-# truncated output (unterminated string / unclosed braces), and non-string
-# values in string fields. parse_json_payload is the single choke point every
-# provider branch goes through, so all of this is handled once, here. When
-# even this fails, the raw output escalates to the LLM formatter.
 
 def _extract_json_objects(content: str) -> list[str]:
     """Returns every top-level {...} substring in the text, respecting string
