@@ -13,7 +13,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
 # Vision engines. Kept separate from the chat PROFILES in api_handler on purpose:
 # vision requirements (multimodal input, low latency, cheap) differ from chat.
-VISION_MODEL_PRIMARY = "gemini-2.5-flash"
+VISION_MODEL_PRIMARY = "gemini-3.5-flash-lite"
 # NOTE: the previous fallback (meta-llama/llama-3.2-11b-vision-instruct) is
 # delisted from OpenRouter on July 17, 2026. Llama 4 Scout is its natively
 # multimodal, cheaper successor.
@@ -62,7 +62,13 @@ async def analyze_with_gemini(b64_image: str, mime_type: str, client: httpx.Asyn
         response = await client.post(endpoint, json=payload, timeout=15.0)
         response.raise_for_status()
         data = response.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        parts = data["candidates"][0]["content"]["parts"]
+        description = "".join(
+            part["text"]
+            for part in parts
+            if isinstance(part.get("text"), str) and not part.get("thought", False)
+        ).strip()
+        return description or None
     except Exception as e:
         logger.error(f"Gemini vision analysis failed: {e}")
         return None

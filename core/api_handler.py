@@ -5,9 +5,12 @@ import re
 import asyncio
 import logging
 import random
+import time
 from typing import Callable
 from dotenv import load_dotenv
 from core import prompts
+from core.server_config import notebook_scope
+from core.tools import NotebookSession, MAX_MODEL_REQUESTS, MAX_TOOL_ACTIONS, NOTEBOOK_TURN_SECONDS
 from core.prompt_builder import (
     build_prompt_assembler_prompts,
     build_chat_prompts,
@@ -21,18 +24,15 @@ from core.prompt_builder import (
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-# Ordered fallback chain. The first profile is the primary; each subsequent
-# profile is tried only if the previous one HARD-failed. Soft failures
-# trigger the formater instead.
+# Try the next route when a request or its JSON recovery fails.
 PROFILE_CHAIN = [
     "deepseek_openrouter",
     "deepseek_v41_siliconflow",
     "deepseek_v41_openrouter",
-    "gemini_flash",
 ]
 
 # The formatter repairs malformed JSON without rewriting Leepa's words.
-JSON_FORMATTER_PROFILE = "gemini_flash"
+JSON_FORMATTER_PROFILE = "json_formatter"
 FORMATTER_TEMPERATURE = 0.05
 
 # This call only chooses a prompt assembly. It never writes Leepa's response.
@@ -115,16 +115,17 @@ PROFILES = {
             "require_parameters": True
         }
     },
-    "gemini_flash": {
-        "provider": "gemini",
-        "model": "gemini-2.5-flash",
-        "capabilities": {"native_thinking": False, "temp_scalar": 1.8}
+    "json_formatter": {
+        "provider": "openrouter",
+        "model": "deepseek/deepseek-chat-v3-0324",
+        "capabilities": {"native_thinking": False, "temp_scalar": 1.0},
+        "omit_payload_fields": ("frequency_penalty", "presence_penalty"),
+        "provider_routing": {
+            "allow_fallbacks": True,
+            "require_parameters": True,
+            "ignore": ["novita"],
+        },
     },
-    "gemini_3_flash": {
-        "provider": "gemini",
-        "model": "gemini-3-flash-preview",
-        "capabilities": {"native_thinking": True, "temp_scalar": 1.8}
-    }
 }
 
 PROVIDERS = {
@@ -159,7 +160,7 @@ MAX_OUTPUT_TOKENS = 1000
 # ---------------------------------------------------------
 # The remedy_hint in a shared-pool 429 literally says "retry shortly". A
 # saturated pool won't clear on demand, but a brief retry often catches the
-# next open slot before we burn a whole profile and drop to gemini. Kept
+# next open slot before we move to the next DeepSeek route. Kept
 # small on purpose: Discord expects a reply in seconds, not minutes.
 # Only a rate_limit/timeout mood is retried; hard errors fall through instantly.
 RETRY_ON_MOODS = {"rate_limit", "timeout"}
@@ -378,7 +379,7 @@ def handle_error_response(error: dict) -> dict:
     finish_reason = "error"
     wait_time = None
 
-    if error.get("code") == 429:
+    if str(error.get("code")) == "429":
         finish_reason = "rate_limit"
 
     groq_match = re.search(r'try again in (?:(\d+)h)?(?:(\d+)m(?!s))?(?:(\d+\.?\d*)s)?(?:(\d+)ms)?', error_str)
@@ -459,6 +460,10 @@ async def call_llm(
     thermal_scalar: float | None = None,
     allow_llm_formatter: bool = True,
     content_parser: Callable[[str], dict] | None = None,
+    messages: list[dict] | None = None,
+    tool_definitions: list[dict] | None = None,
+    tool_choice: str = "auto",
+    raw_response: bool = False,
 ) -> dict:
     """Executes one provider request and parses its JSON response."""
     profile = PROFILES.get(profile_key)
@@ -495,6 +500,9 @@ async def call_llm(
     # NATIVE GEMINI ROUTING
     # ---------------------------------------------------------
     if provider_key == "gemini":
+        if tool_definitions is not None:
+            logger.error("Native Gemini chat routing does not implement notebook tools.")
+            return {"response": "", "reaction_emoji": "", "internal_mood": "error", "_failed": True}
         endpoint = f"{provider['url']}/{model}:generateContent?key={provider['key']}"
         headers = {"Content-Type": "application/json"}
 
@@ -517,7 +525,11 @@ async def call_llm(
             result = response.json()
 
             if "error" in result:
-                return handle_error_response(result["error"])
+                error = result["error"]
+                error = dict(error) if isinstance(error, dict) else {"message": str(error)}
+                if response.status_code == 429:
+                    error["code"] = 429
+                return handle_error_response(error)
 
             content = result["candidates"][0]["content"]["parts"][0]["text"]
             if content_parser is not None:
@@ -546,7 +558,7 @@ async def call_llm(
 
         payload = {
             "model": model,
-            "messages": [
+            "messages": messages if messages is not None else [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
@@ -570,13 +582,27 @@ async def call_llm(
         for field in profile.get("omit_payload_fields", ()):
             payload.pop(field, None)
 
+        if tool_definitions is not None:
+            payload["tools"] = tool_definitions
+            payload["tool_choice"] = tool_choice
+            if tool_choice != "none":
+                payload.pop("response_format", None)
+            if provider_key == "openrouter":
+                payload["provider"] = dict(payload.get("provider", {}), require_parameters=True)
+                if profile_key == "deepseek_openrouter":
+                    payload.pop("presence_penalty", None)
+
         content = None
         try:
             response = await client.post(endpoint, headers=headers, json=payload)
             result = response.json()
 
             if "error" in result:
-                return handle_error_response(result["error"])
+                error = result["error"]
+                error = dict(error) if isinstance(error, dict) else {"message": str(error)}
+                if response.status_code == 429:
+                    error["code"] = 429
+                return handle_error_response(error)
 
             # Some providers (SiliconFlow among them) report errors as a
             # TOP-LEVEL {"code": ..., "message": ...} object instead of
@@ -596,7 +622,12 @@ async def call_llm(
                     pseudo_error["code"] = 429
                 return handle_error_response(pseudo_error)
 
-            content = result["choices"][0]["message"]["content"]
+            choice = result["choices"][0]
+            if raw_response:
+                if choice.get("finish_reason") == "length" and choice["message"].get("tool_calls"):
+                    return handle_error_response({"message": "Truncated tool request; nothing was executed."})
+                return {"_message": choice["message"], "_profile": profile_key}
+            content = choice["message"]["content"]
             if content_parser is not None:
                 return content_parser(content)
             return await _parse_or_reformat(content, allow_llm_formatter, f"{provider_key}|{model}")
@@ -654,7 +685,9 @@ async def select_prompt_assembly(
     )
     return assembly_id
 
-async def call_llm_with_fallback(system_prompt: str, user_prompt: str, thermal_scalar: float | None = None) -> dict:
+async def call_llm_with_fallback(system_prompt: str, user_prompt: str, thermal_scalar: float | None = None,
+                                 session: NotebookSession | None = None, start_profile: str | None = None,
+                                 **request_options) -> dict:
     """Walks PROFILE_CHAIN in order, returning the first successful response.
     Each attempt draws its own jittered temperature (unless pinned), scaled by
     that profile's own temp_scalar. If every profile fails, the last failure
@@ -662,10 +695,17 @@ async def call_llm_with_fallback(system_prompt: str, user_prompt: str, thermal_s
     result = {"response": "", "reaction_emoji": "", "internal_mood": "error", "_failed": True}
 
     for i, profile_key in enumerate(PROFILE_CHAIN):
+        if start_profile in PROFILE_CHAIN and i < PROFILE_CHAIN.index(start_profile):
+            continue
         # Try this profile, retrying on transient rate_limit/timeout moods
         # before giving up on it and dropping to the next profile.
         for attempt in range(MAX_RETRIES_PER_PROFILE + 1):
-            result = await call_llm(system_prompt, user_prompt, profile_key, thermal_scalar)
+            if session is not None:
+                if session.cancelled() or session.requests >= MAX_MODEL_REQUESTS:
+                    logger.warning("[NOTEBOOK] Turn cancelled or model request limit reached.")
+                    return {"response": "", "reaction_emoji": "", "internal_mood": "tool_limit", "_failed": True}
+                session.requests += 1
+            result = await call_llm(system_prompt, user_prompt, profile_key, thermal_scalar, **request_options)
             if not result.get("_failed"):
                 return result
 
@@ -693,10 +733,64 @@ async def call_llm_with_fallback(system_prompt: str, user_prompt: str, thermal_s
     return result
 
 
+async def _notebook_turn(system_prompt: str, user_prompt: str, thermal_scalar: float, session: NotebookSession) -> dict:
+    messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+    profile = None
+    while not session.cancelled():
+        final_only = session.actions >= MAX_TOOL_ACTIONS or session.requests >= MAX_MODEL_REQUESTS - 1
+        result = await call_llm_with_fallback(
+            system_prompt, user_prompt, thermal_scalar, session=session, start_profile=profile,
+            messages=messages, tool_definitions=session.definitions,
+            tool_choice="none" if final_only else "auto", raw_response=True,
+        )
+        if result.get("_failed") or session.cancelled():
+            return result if result.get("_failed") else handle_error_response({"message": "Notebook turn cancelled."})
+        profile = result["_profile"]
+        message = result["_message"]
+        if not isinstance(message, dict):
+            return handle_error_response({"message": "Invalid model message."})
+        calls = message.get("tool_calls")
+        if calls:
+            valid = isinstance(calls, list) and len(calls) <= MAX_TOOL_ACTIONS
+            ids = []
+            if valid:
+                for call in calls:
+                    if not isinstance(call, dict) or call.get("type") != "function" or not isinstance(call.get("function"), dict):
+                        valid = False
+                        break
+                    call_id = call.get("id")
+                    if not isinstance(call_id, str) or not call_id or len(call_id) > 200:
+                        valid = False
+                        break
+                    ids.append(call_id)
+            if final_only or not valid or len(set(ids)) != len(ids):
+                return handle_error_response({"message": "Invalid tool-call envelope; nothing was executed."})
+            messages.append({"role": "assistant", "content": message.get("content"), "tool_calls": calls})
+            for call in calls:
+                if session.cancelled():
+                    return handle_error_response({"message": "Notebook turn cancelled."})
+                output = await session.execute(call)
+                messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(output, ensure_ascii=False)})
+            continue
+        try:
+            parsed = await _parse_or_reformat(message.get("content") or "", True, profile)
+            if not parsed.get("_failed"):
+                return parsed
+        except (TypeError, ValueError):
+            logger.exception("[NOTEBOOK] Final response could not be parsed.")
+        next_index = PROFILE_CHAIN.index(profile) + 1
+        if next_index >= len(PROFILE_CHAIN):
+            break
+        profile = PROFILE_CHAIN[next_index]
+        logger.warning("[NOTEBOOK] Trying %s with the existing tool history.", profile)
+    return handle_error_response({"message": "Notebook turn ended without a usable response."})
+
+
 async def generate_chat_response(
     context_block: str,
     discord_context: dict,
     sloppy_mode: str | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> dict:
     """Builds Leepa's prompt and sends it through the provider chain."""
     prompt_assembly_id = None
@@ -710,12 +804,39 @@ async def generate_chat_response(
         )
         thermal_scalar = draw_prompt_assembly_temperature(prompt_assembly_id)
 
+    session = None
+    notebook_info = None
+    if notebook_scope(discord_context):
+        try:
+            session = NotebookSession(discord_context, cancelled or (lambda: False))
+            notebook_info = await session.orientation()
+        except Exception:
+            logger.exception("[NOTEBOOK] Notebook unavailable; continuing without tools.")
+            if session is not None:
+                session.closed = True
+            session = None
+            notebook_info = {"available": False}
+
     system_prompt, user_prompt = build_chat_prompts(
         context_block,
         discord_context,
         sloppy_mode,
         prompt_assembly_id,
+        notebook_info,
     )
+    if session is not None:
+        if thermal_scalar is None:
+            thermal_scalar = draw_jittered_temperature() if prompts.USE_TEMPERATURE_JITTER else prompts.FIXED_THERMAL_SCALAR
+        try:
+            return await asyncio.wait_for(
+                _notebook_turn(system_prompt, user_prompt, thermal_scalar, session),
+                timeout=max(0.01, session.deadline - time.monotonic()),
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[NOTEBOOK] Turn exceeded %.0f seconds.", NOTEBOOK_TURN_SECONDS)
+            return {"response": "", "reaction_emoji": "", "internal_mood": "timeout", "_failed": True}
+        finally:
+            session.closed = True
     return await call_llm_with_fallback(
         system_prompt,
         user_prompt,

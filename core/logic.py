@@ -12,6 +12,8 @@ from core.bot_registry import RAKUN_ID, is_non_conversational_bot
 from core.discord_context import collect_discord_context
 from core.memory_queue import ShortTermMemory
 from core.image_analysis import analyze_image
+from core.server_config import get_command_mode, sloppy_enabled, starts_sloppy_command, notebook_scope
+from core.tools import NOTEBOOK_TURN_SECONDS
 
 # Initializes logging and loads environment variables from the .env file.
 logger = logging.getLogger(__name__)
@@ -26,7 +28,7 @@ active_channel_memories = {}
 active_bot_channels = set()
 bot_reply_cooldowns = {}
 
-# Each reply to a bot usually ends the exchange for a certain amount of seconds.
+# Each reply to a bot usually ends the exchange for a minute.
 BOT_REPLY_PAUSE_CHANCE = 0.80
 BOT_REPLY_PAUSE_SECONDS = 60.0
 
@@ -82,18 +84,6 @@ def maybe_pause_bot_replies(
         )
     else:
         logger.info("Bot exchange with %s may continue.", bot_name)
-
-
-def get_sloppy_mode(content: str) -> str | None:
-    """Returns the forced Sloppy mode when the first token is a Leepa command."""
-    if not prompts.USE_SLOPPY:
-        return None
-
-    content_parts = content.split(maxsplit=1)
-    if not content_parts:
-        return None
-
-    return prompts.SLOPPY_MODE_TRIGGERS.get(content_parts[0])
 
 
 async def build_message_payload(message) -> tuple[str, dict[int, str]]:
@@ -318,7 +308,7 @@ async def process_message(message, bot_user) -> None:
         )
         return
 
-    sloppy_mode = get_sloppy_mode(message.content)
+    sloppy_mode = get_command_mode(message.content, discord_context)
     engagement_level, should_trigger = evaluate_message_context(
         message,
         bot_user,
@@ -351,7 +341,7 @@ async def process_message(message, bot_user) -> None:
     )
     active_processing_locks[message.id] = {
         "status": lock_status,
-        "expires": current_time + 60.0,
+        "expires": current_time + (NOTEBOOK_TURN_SECONDS + 90.0 if notebook_scope(discord_context) else 60.0),
     }
 
     try:
@@ -359,6 +349,7 @@ async def process_message(message, bot_user) -> None:
             context_block,
             discord_context,
             sloppy_mode,
+            cancelled=lambda: active_processing_locks.get(message.id, {}).get("status") is True,
         )
 
         logger.info(
@@ -371,6 +362,9 @@ async def process_message(message, bot_user) -> None:
             return
 
         reply_text = response_data.get("response", "").strip()
+        if not sloppy_enabled(discord_context) and starts_sloppy_command(reply_text):
+            logger.warning("Sloppy command blocked: creation commands are unavailable in this location.")
+            reply_text = ""
         reaction_emoji = (
             response_data.get("reaction_emoji", "").strip()
             if prompts.USE_EMOJI_REACTIONS
@@ -452,5 +446,6 @@ async def process_message(message, bot_user) -> None:
             author_id=bot_user.id,
         )
     finally:
+        active_processing_locks.pop(message.id, None)
         if bot_channel_reserved:
             active_bot_channels.discard(message.channel.id)
