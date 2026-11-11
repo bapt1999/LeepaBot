@@ -1,13 +1,15 @@
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 from core import prompts
 
 
-load_dotenv()
+ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
+load_dotenv(dotenv_path=ENV_FILE)
 logger = logging.getLogger(__name__)
 
 
@@ -23,10 +25,10 @@ def _read_server_ids(variable_name: str) -> set[int]:
         if not value:
             continue
         if not value.isascii() or not value.isdecimal():
-            raise ValueError(f"{variable_name} must contain comma-separated Discord server IDs.")
+            raise ValueError(f"{variable_name} must contain comma-separated Discord IDs.")
         server_id = int(value)
         if not 0 < server_id < 2**64:
-            raise ValueError(f"{variable_name} contains an invalid Discord server ID.")
+            raise ValueError(f"{variable_name} contains an invalid Discord ID.")
         server_ids.add(server_id)
     return server_ids
 
@@ -89,19 +91,16 @@ def starts_sloppy_command(content: str) -> bool:
     )
 
 
-def _flag(name: str, default: bool) -> bool:
-    value = os.getenv(name, str(default)).strip().lower()
-    if value not in {"true", "false", "1", "0"}:
-        raise ValueError(f"{name} must be true or false.")
-    return value in {"true", "1"}
-
-
-USE_NOTEBOOK = _flag("USE_NOTEBOOK", False)
-NOTEBOOK_WRITES = _flag("NOTEBOOK_WRITES", True)
-NOTEBOOK_DMS = _flag("NOTEBOOK_DMS", False)
+# Feature switches live in prompts.py; paths and IDs come from .env.
+USE_NOTEBOOK = prompts.USE_NOTEBOOK
+NOTEBOOK_WRITES = prompts.NOTEBOOK_WRITES
+NOTEBOOK_DMS = prompts.NOTEBOOK_DMS
 NOTEBOOK_ROOT = os.getenv("NOTEBOOK_ROOT", "~/Leepa_sb")
 NOTEBOOK_SERVER_IDS = _read_server_ids("NOTEBOOK_SERVER_IDS")
 NOTEBOOK_SHARED_CHANNEL_IDS = _read_server_ids("NOTEBOOK_SHARED_CHANNEL_IDS")
+
+if USE_NOTEBOOK and not NOTEBOOK_SERVER_IDS and not NOTEBOOK_DMS:
+    logger.warning("Notebook enabled, but no locations are enabled. Set NOTEBOOK_SERVER_IDS in %s.", ENV_FILE)
 
 
 def notebook_scope(discord_context: dict) -> str | None:
