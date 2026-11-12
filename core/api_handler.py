@@ -793,6 +793,17 @@ async def generate_chat_response(
     cancelled: Callable[[], bool] | None = None,
 ) -> dict:
     """Builds Leepa's prompt and sends it through the provider chain."""
+    cancelled = cancelled or (lambda: False)
+    cancelled_result = {
+        "response": "",
+        "reaction_emoji": "",
+        "internal_mood": "cancelled",
+        "_failed": True,
+        "_cancelled": True,
+    }
+    if cancelled():
+        return cancelled_result
+
     prompt_assembly_id = None
     thermal_scalar = None
 
@@ -804,18 +815,28 @@ async def generate_chat_response(
         )
         thermal_scalar = draw_prompt_assembly_temperature(prompt_assembly_id)
 
+    if cancelled():
+        return cancelled_result
+
     session = None
     notebook_info = None
     if notebook_scope(discord_context):
         try:
-            session = NotebookSession(discord_context, cancelled or (lambda: False))
+            session = NotebookSession(discord_context, cancelled)
             notebook_info = await session.orientation()
         except Exception:
-            logger.exception("[NOTEBOOK] Notebook unavailable; continuing without tools.")
             if session is not None:
                 session.closed = True
+            if cancelled():
+                return cancelled_result
+            logger.exception("[NOTEBOOK] Notebook unavailable; continuing without tools.")
             session = None
             notebook_info = {"available": False}
+
+    if cancelled():
+        if session is not None:
+            session.closed = True
+        return cancelled_result
 
     system_prompt, user_prompt = build_chat_prompts(
         context_block,

@@ -352,15 +352,19 @@ async def process_message(message, bot_user) -> None:
             cancelled=lambda: active_processing_locks.get(message.id, {}).get("status") is True,
         )
 
+        lock_data = active_processing_locks.pop(message.id, {})
+        if lock_data.get("status") is True or response_data.get("_cancelled"):
+            logger.info(
+                "Turn %s cancelled because another bot replied first.",
+                message.id,
+            )
+            return
+
         logger.info(
             f"<<< OUTGOING\n"
             f"{json.dumps(response_data, indent=2, ensure_ascii=False)}"
         )
-
-        # pop() removes the lock regardless of whether execution is aborted.
-        if active_processing_locks.pop(message.id, {}).get("status") is True:
-            return
-
+        
         reply_text = response_data.get("response", "").strip()
         if not sloppy_enabled(discord_context) and starts_sloppy_command(reply_text):
             logger.warning("Sloppy command blocked: creation commands are unavailable in this location.")
