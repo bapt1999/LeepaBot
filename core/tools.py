@@ -3,15 +3,19 @@ import hashlib
 import json
 import logging
 import time
+from urllib.parse import urlsplit
 
-from core import server_config
+from core import prompts, server_config
 from core.notebook import Notebook, NotebookError
 
 
 logger = logging.getLogger(__name__)
 MAX_TOOL_ACTIONS = 6
 MAX_MODEL_REQUESTS = 10
-NOTEBOOK_TURN_SECONDS = 90.0
+TOOL_TURN_SECONDS = 90.0
+MAX_WEB_SEARCHES = 2
+MAX_WEB_RESULTS = 5
+MAX_WEB_CHARACTERS = 2000
 READ_TOOLS = {"list_files", "read_file", "search_files", "list_versions"}
 
 PATH = {"type": "string", "description": "Relative .md or .txt filename in this notebook."}
@@ -56,10 +60,10 @@ def _unique_object(pairs):
     return result
 
 
-class NotebookSession:
+class ToolSession:
     def __init__(self, context: dict, cancelled):
         self.scope = server_config.notebook_scope(context)
-        self.notebook = Notebook(server_config.NOTEBOOK_ROOT, self.scope) if self.scope else None
+        self.notebook = None
         message = context.get("message", {})
         author = message.get("author", {})
         self.origin = {
@@ -70,10 +74,13 @@ class NotebookSession:
         }
         self.turn_id = str(message.get("id") or "")
         self.closed = False
-        self.deadline = time.monotonic() + NOTEBOOK_TURN_SECONDS
+        self.deadline = time.monotonic() + TOOL_TURN_SECONDS
         self.cancelled = lambda: self.closed or time.monotonic() >= self.deadline or cancelled()
         self.actions = 0
         self.requests = 0
+        self.web_enabled = prompts.USE_WEB_SEARCH
+        self.searches_remaining = MAX_WEB_SEARCHES if self.web_enabled else 0
+        self.sources = {}
         self.names = set(SPECS) if server_config.NOTEBOOK_WRITES and self.turn_id else READ_TOOLS
         self.definitions = [
             {"type": "function", "function": {
@@ -84,10 +91,101 @@ class NotebookSession:
         ]
 
     async def orientation(self) -> dict:
-        if self.notebook is None:
+        if self.scope is None:
             return {"available": False}
+        self.notebook = Notebook(server_config.NOTEBOOK_ROOT, self.scope)
         result = await asyncio.to_thread(self.notebook.run, "list_files", {}, "", self.origin, self.cancelled)
         return {"available": True, "writes_allowed": "write_file" in self.names, "files": result}
+
+    def prepare_request(self, provider: str, messages: list[dict], final_only: bool) -> tuple[dict, int]:
+        definitions = []
+        if not final_only and self.notebook is not None and self.actions < MAX_TOOL_ACTIONS:
+            definitions.extend(self.definitions)
+        allowance = self.searches_remaining if provider == "openrouter" and not final_only else 0
+        if allowance:
+            definitions.append({
+                "type": "openrouter:web_search",
+                "parameters": {
+                    "engine": "exa",
+                    "max_uses": allowance,
+                    "max_results": MAX_WEB_RESULTS,
+                    "max_total_results": allowance * MAX_WEB_RESULTS,
+                    "max_characters": MAX_WEB_CHARACTERS,
+                },
+            })
+            # Reserve before sending; an interrupted request may still have searched.
+            self.searches_remaining = 0
+
+        remaining_notes = max(0, MAX_TOOL_ACTIONS - self.actions) if self.notebook is not None else 0
+        status = (
+            "CURRENT TOOL AVAILABILITY FOR THIS REQUEST:\n"
+            f"Web search: {'available' if allowance else 'unavailable'}; {allowance} searches allowed.\n"
+            f"Notebook operations available: {0 if final_only else remaining_notes}.\n"
+            "Use only the tools offered in this request. You may use earlier results as data. "
+            "Do not claim new searches or notebook operations that did not happen."
+        )
+        request_messages = [dict(message) for message in messages]
+        request_messages[0]["content"] += "\n\n" + status
+        return {
+            "messages": request_messages,
+            "tool_definitions": definitions or None,
+            "tool_choice": "auto" if definitions else "none",
+            "raw_response": True,
+        }, allowance
+
+    def record_search_usage(self, allowance: int, result: dict, profile: str) -> None:
+        if not allowance:
+            return
+        usage = result.get("_usage")
+        message = result.get("_message")
+        used = None
+        if not result.get("_failed") and isinstance(usage, dict) and usage:
+            details = usage.get("server_tool_use_details")
+            if isinstance(details, dict):
+                used = details.get("web_search_requests")
+            elif details is None and isinstance(message, dict) and not message.get("annotations"):
+                used = 0
+        if type(used) is not int or not 0 <= used <= allowance:
+            logger.warning("[WEB] %s usage uncertain; no more searches this turn.", profile)
+            return
+        self.searches_remaining += allowance - used
+        result["_web_searches"] = used
+        logger.info("[WEB] %s searches=%s remaining=%s", profile, used, self.searches_remaining)
+
+    def collect_sources(self, message: dict) -> list[dict]:
+        sources = []
+        annotations = message.get("annotations")
+        if not isinstance(annotations, list):
+            return sources
+        for annotation in annotations[:MAX_WEB_SEARCHES * MAX_WEB_RESULTS]:
+            if not isinstance(annotation, dict) or annotation.get("type") != "url_citation":
+                continue
+            citation = annotation.get("url_citation")
+            if not isinstance(citation, dict):
+                continue
+            url = citation.get("url")
+            if not isinstance(url, str) or len(url) > 2048 or any(ch.isspace() for ch in url):
+                continue
+            try:
+                parsed = urlsplit(url)
+                if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+                    continue
+            except ValueError:
+                continue
+            source = {
+                "url": url,
+                "title": str(citation.get("title") or "")[:200],
+                "excerpt": str(citation.get("content") or "")[:MAX_WEB_CHARACTERS],
+            }
+            if url not in self.sources and len(self.sources) >= MAX_WEB_SEARCHES * MAX_WEB_RESULTS:
+                continue
+            if self.sources.get(url) == source:
+                sources.append(source)
+                continue
+            self.sources[url] = source
+            sources.append(source)
+            logger.info("[WEB] Source: %r %s", source["title"], url)
+        return sources
 
     async def execute(self, call: dict) -> dict:
         self.actions += 1

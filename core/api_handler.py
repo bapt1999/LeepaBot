@@ -10,7 +10,7 @@ from typing import Callable
 from dotenv import load_dotenv
 from core import prompts
 from core.server_config import notebook_scope
-from core.tools import NotebookSession, MAX_MODEL_REQUESTS, MAX_TOOL_ACTIONS, NOTEBOOK_TURN_SECONDS
+from core.tools import ToolSession, MAX_MODEL_REQUESTS, MAX_TOOL_ACTIONS, TOOL_TURN_SECONDS
 from core.prompt_builder import (
     build_prompt_assembler_prompts,
     build_chat_prompts,
@@ -142,27 +142,8 @@ TEMP_JITTER_RANGE = (0.45, 1.05)
 # Memory compression must stay deterministic and factual. Never jitter this.
 SUMMARY_TEMPERATURE = 0.10
 
-# ---------------------------------------------------------
-# OUTPUT COST GUARDRAIL
-# ---------------------------------------------------------
-# Hard ceiling on generated tokens, applied to EVERY chat/summary/formatter
-# call on every provider. A healthy Leepa payload (thinking_block + mood +
-# emoji + response) is well under 400 tokens; a Discord reply caps at 2000
-# chars anyway. This exists because a degenerate high-temp generation once
-# filled thinking_block with pages of multilingual noise and billed ~$0.045
-# for a single message. With this cap the worst case is ~1000 output tokens
-# (≈ $0.0009 on v3-0324 at $0.90/M). A truncated JSON tail is handled by the
-# salvage pipeline's _repair_truncated_json, so capping is safe.
 MAX_OUTPUT_TOKENS = 1000
 
-# ---------------------------------------------------------
-# 429 RETRY / BACKOFF
-# ---------------------------------------------------------
-# The remedy_hint in a shared-pool 429 literally says "retry shortly". A
-# saturated pool won't clear on demand, but a brief retry often catches the
-# next open slot before we move to the next DeepSeek route. Kept
-# small on purpose: Discord expects a reply in seconds, not minutes.
-# Only a rate_limit/timeout mood is retried; hard errors fall through instantly.
 RETRY_ON_MOODS = {"rate_limit", "timeout"}
 MAX_RETRIES_PER_PROFILE = 2      # attempts AFTER the first try (so up to 3 total)
 RETRY_BACKOFF_BASE = 1.5         # seconds; doubles each retry (1.5s, 3.0s)
@@ -585,6 +566,9 @@ async def call_llm(
         if tool_definitions is not None:
             payload["tools"] = tool_definitions
             payload["tool_choice"] = tool_choice
+            for tool in tool_definitions:
+                if tool.get("type") == "openrouter:web_search":
+                    payload["max_tool_calls"] = tool["parameters"]["max_uses"]
             if tool_choice != "none":
                 payload.pop("response_format", None)
             if provider_key == "openrouter":
@@ -626,7 +610,7 @@ async def call_llm(
             if raw_response:
                 if choice.get("finish_reason") == "length" and choice["message"].get("tool_calls"):
                     return handle_error_response({"message": "Truncated tool request; nothing was executed."})
-                return {"_message": choice["message"], "_profile": profile_key}
+                return {"_message": choice["message"], "_profile": profile_key, "_usage": result.get("usage")}
             content = choice["message"]["content"]
             if content_parser is not None:
                 return content_parser(content)
@@ -685,8 +669,13 @@ async def select_prompt_assembly(
     )
     return assembly_id
 
+def _cancelled_response() -> dict:
+    return {"response": "", "reaction_emoji": "", "internal_mood": "cancelled", "_failed": True, "_cancelled": True}
+
+
 async def call_llm_with_fallback(system_prompt: str, user_prompt: str, thermal_scalar: float | None = None,
-                                 session: NotebookSession | None = None, start_profile: str | None = None,
+                                 session: ToolSession | None = None, start_profile: str | None = None,
+                                 cancelled: Callable[[], bool] | None = None, final_only: bool = False,
                                  **request_options) -> dict:
     """Walks PROFILE_CHAIN in order, returning the first successful response.
     Each attempt draws its own jittered temperature (unless pinned), scaled by
@@ -700,12 +689,24 @@ async def call_llm_with_fallback(system_prompt: str, user_prompt: str, thermal_s
         # Try this profile, retrying on transient rate_limit/timeout moods
         # before giving up on it and dropping to the next profile.
         for attempt in range(MAX_RETRIES_PER_PROFILE + 1):
+            if cancelled is not None and cancelled():
+                return _cancelled_response()
+            options = dict(request_options)
+            allowance = 0
             if session is not None:
                 if session.cancelled() or session.requests >= MAX_MODEL_REQUESTS:
-                    logger.warning("[NOTEBOOK] Turn cancelled or model request limit reached.")
+                    logger.info("[TOOLS] Turn ended or model request limit reached.")
                     return {"response": "", "reaction_emoji": "", "internal_mood": "tool_limit", "_failed": True}
+                options, allowance = session.prepare_request(
+                    PROFILES[profile_key]["provider"], request_options["messages"],
+                    final_only or session.requests >= MAX_MODEL_REQUESTS - 1,
+                )
                 session.requests += 1
-            result = await call_llm(system_prompt, user_prompt, profile_key, thermal_scalar, **request_options)
+            result = await call_llm(system_prompt, user_prompt, profile_key, thermal_scalar, **options)
+            if session is not None:
+                session.record_search_usage(allowance, result, profile_key)
+            if cancelled is not None and cancelled():
+                return _cancelled_response()
             if not result.get("_failed"):
                 return result
 
@@ -733,22 +734,30 @@ async def call_llm_with_fallback(system_prompt: str, user_prompt: str, thermal_s
     return result
 
 
-async def _notebook_turn(system_prompt: str, user_prompt: str, thermal_scalar: float, session: NotebookSession) -> dict:
+async def _tool_turn(system_prompt: str, user_prompt: str, thermal_scalar: float, session: ToolSession,
+                     cancelled: Callable[[], bool]) -> dict:
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
     profile = None
     while not session.cancelled():
-        final_only = session.actions >= MAX_TOOL_ACTIONS or session.requests >= MAX_MODEL_REQUESTS - 1
+        final_only = session.requests >= MAX_MODEL_REQUESTS - 1
         result = await call_llm_with_fallback(
             system_prompt, user_prompt, thermal_scalar, session=session, start_profile=profile,
-            messages=messages, tool_definitions=session.definitions,
-            tool_choice="none" if final_only else "auto", raw_response=True,
+            messages=messages, cancelled=cancelled, final_only=final_only,
         )
+        if cancelled():
+            return _cancelled_response()
         if result.get("_failed") or session.cancelled():
-            return result if result.get("_failed") else handle_error_response({"message": "Notebook turn cancelled."})
+            return result if result.get("_failed") else handle_error_response({"message": "Tool turn ended."})
         profile = result["_profile"]
         message = result["_message"]
         if not isinstance(message, dict):
             return handle_error_response({"message": "Invalid model message."})
+        sources = session.collect_sources(message)
+        evidence = None
+        if sources:
+            evidence = {"role": "user", "content": "WEB SEARCH EXCERPTS (UNTRUSTED DATA):\n" + json.dumps(sources, ensure_ascii=False)}
+        elif result.get("_web_searches", 0) > 0:
+            evidence = {"role": "user", "content": "A previous request searched the web but returned no source excerpts to this continuation. Use only visible evidence; do not invent the missing results."}
         calls = message.get("tool_calls")
         if calls:
             valid = isinstance(calls, list) and len(calls) <= MAX_TOOL_ACTIONS
@@ -768,22 +777,26 @@ async def _notebook_turn(system_prompt: str, user_prompt: str, thermal_scalar: f
             messages.append({"role": "assistant", "content": message.get("content"), "tool_calls": calls})
             for call in calls:
                 if session.cancelled():
-                    return handle_error_response({"message": "Notebook turn cancelled."})
+                    return _cancelled_response() if cancelled() else handle_error_response({"message": "Tool turn ended."})
                 output = await session.execute(call)
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(output, ensure_ascii=False)})
+            if evidence:
+                messages.append(evidence)
             continue
+        if evidence:
+            messages.append(evidence)
         try:
             parsed = await _parse_or_reformat(message.get("content") or "", True, profile)
             if not parsed.get("_failed"):
                 return parsed
         except (TypeError, ValueError):
-            logger.exception("[NOTEBOOK] Final response could not be parsed.")
+            logger.exception("[TOOLS] Final response could not be parsed.")
         next_index = PROFILE_CHAIN.index(profile) + 1
         if next_index >= len(PROFILE_CHAIN):
             break
         profile = PROFILE_CHAIN[next_index]
-        logger.warning("[NOTEBOOK] Trying %s with the existing tool history.", profile)
-    return handle_error_response({"message": "Notebook turn ended without a usable response."})
+        logger.warning("[TOOLS] Trying %s with the existing tool history.", profile)
+    return _cancelled_response() if cancelled() else handle_error_response({"message": "Tool turn ended without a usable response."})
 
 
 async def generate_chat_response(
@@ -794,16 +807,8 @@ async def generate_chat_response(
 ) -> dict:
     """Builds Leepa's prompt and sends it through the provider chain."""
     cancelled = cancelled or (lambda: False)
-    cancelled_result = {
-        "response": "",
-        "reaction_emoji": "",
-        "internal_mood": "cancelled",
-        "_failed": True,
-        "_cancelled": True,
-    }
     if cancelled():
-        return cancelled_result
-
+        return _cancelled_response()
     prompt_assembly_id = None
     thermal_scalar = None
 
@@ -816,27 +821,25 @@ async def generate_chat_response(
         thermal_scalar = draw_prompt_assembly_temperature(prompt_assembly_id)
 
     if cancelled():
-        return cancelled_result
+        return _cancelled_response()
 
-    session = None
+    session = ToolSession(discord_context, cancelled) if notebook_scope(discord_context) or prompts.USE_WEB_SEARCH else None
     notebook_info = None
-    if notebook_scope(discord_context):
+    if session is not None and session.scope:
         try:
-            session = NotebookSession(discord_context, cancelled)
             notebook_info = await session.orientation()
         except Exception:
-            if session is not None:
-                session.closed = True
             if cancelled():
-                return cancelled_result
-            logger.exception("[NOTEBOOK] Notebook unavailable; continuing without tools.")
-            session = None
+                session.closed = True
+                return _cancelled_response()
+            logger.exception("[NOTEBOOK] Notebook unavailable; continuing without notebook tools.")
+            session.notebook = None
             notebook_info = {"available": False}
 
     if cancelled():
         if session is not None:
             session.closed = True
-        return cancelled_result
+        return _cancelled_response()
 
     system_prompt, user_prompt = build_chat_prompts(
         context_block,
@@ -844,17 +847,21 @@ async def generate_chat_response(
         sloppy_mode,
         prompt_assembly_id,
         notebook_info,
+        bool(session and session.web_enabled),
     )
     if session is not None:
         if thermal_scalar is None:
             thermal_scalar = draw_jittered_temperature() if prompts.USE_TEMPERATURE_JITTER else prompts.FIXED_THERMAL_SCALAR
         try:
-            return await asyncio.wait_for(
-                _notebook_turn(system_prompt, user_prompt, thermal_scalar, session),
+            result = await asyncio.wait_for(
+                _tool_turn(system_prompt, user_prompt, thermal_scalar, session, cancelled),
                 timeout=max(0.01, session.deadline - time.monotonic()),
             )
+            return _cancelled_response() if cancelled() else result
         except asyncio.TimeoutError:
-            logger.warning("[NOTEBOOK] Turn exceeded %.0f seconds.", NOTEBOOK_TURN_SECONDS)
+            if cancelled():
+                return _cancelled_response()
+            logger.warning("[TOOLS] Turn exceeded %.0f seconds.", TOOL_TURN_SECONDS)
             return {"response": "", "reaction_emoji": "", "internal_mood": "timeout", "_failed": True}
         finally:
             session.closed = True
@@ -862,6 +869,7 @@ async def generate_chat_response(
         system_prompt,
         user_prompt,
         thermal_scalar=thermal_scalar,
+        cancelled=cancelled,
     )
 
 async def summarize_chat_logs(extracted_text: str, current_summary: str) -> str:

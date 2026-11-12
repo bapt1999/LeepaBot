@@ -13,7 +13,7 @@ from core.discord_context import collect_discord_context
 from core.memory_queue import ShortTermMemory
 from core.image_analysis import analyze_image
 from core.server_config import get_command_mode, sloppy_enabled, starts_sloppy_command, notebook_scope
-from core.tools import NOTEBOOK_TURN_SECONDS
+from core.tools import TOOL_TURN_SECONDS
 
 # Initializes logging and loads environment variables from the .env file.
 logger = logging.getLogger(__name__)
@@ -341,7 +341,7 @@ async def process_message(message, bot_user) -> None:
     )
     active_processing_locks[message.id] = {
         "status": lock_status,
-        "expires": current_time + (NOTEBOOK_TURN_SECONDS + 90.0 if notebook_scope(discord_context) else 60.0),
+        "expires": time.time() + (TOOL_TURN_SECONDS + 90.0 if notebook_scope(discord_context) or prompts.USE_WEB_SEARCH else 60.0),
     }
 
     try:
@@ -352,19 +352,17 @@ async def process_message(message, bot_user) -> None:
             cancelled=lambda: active_processing_locks.get(message.id, {}).get("status") is True,
         )
 
+        # pop() removes the lock regardless of whether execution is aborted.
         lock_data = active_processing_locks.pop(message.id, {})
         if lock_data.get("status") is True or response_data.get("_cancelled"):
-            logger.info(
-                "Turn %s cancelled because another bot replied first.",
-                message.id,
-            )
+            logger.info("Turn %s cancelled because another bot replied first.", message.id)
             return
 
         logger.info(
             f"<<< OUTGOING\n"
             f"{json.dumps(response_data, indent=2, ensure_ascii=False)}"
         )
-        
+
         reply_text = response_data.get("response", "").strip()
         if not sloppy_enabled(discord_context) and starts_sloppy_command(reply_text):
             logger.warning("Sloppy command blocked: creation commands are unavailable in this location.")
