@@ -129,7 +129,11 @@ async def _execute(args, turn_id, cancelled):
             "compile_memory_limit": JOB_MEMORY_BYTES,
         }
         started = time.monotonic()
-        logger.info("[CODE] turn=%s python=%s source=%r", turn_id, PYTHON_VERSION, args["code"])
+        logger.info(
+            "[CODE] turn=%s python=%s image_path=%r image_description=%r source=%r",
+            turn_id, PYTHON_VERSION, args.get("image_path"),
+            args.get("image_description"), args["code"],
+        )
         try:
             async with httpx.AsyncClient(trust_env=False, follow_redirects=False, timeout=15.0) as client:
                 async with asyncio.timeout(15.0):
@@ -143,7 +147,7 @@ async def _execute(args, turn_id, cancelled):
         except (httpx.HTTPError, TimeoutError):
             _cooldown_until = time.monotonic() + 10.0
             logger.exception("[CODE] turn=%s Piston request failed; pausing new jobs briefly.", turn_id)
-            return {"ok": False, "error": "Piston is unavailable or did not finish in time. Do not claim execution succeeded."}, None
+            return {"ok": False, "retryable": False, "error": "Piston is unavailable or did not finish in time. Do not claim execution succeeded."}, None
         if cancelled():
             return {"ok": False, "error": "Turn cancelled; results discarded."}, None
         response = json.loads(body)
@@ -190,10 +194,10 @@ async def _execute(args, turn_id, cancelled):
 
 async def run_python(args, turn_id, cancelled):
     if not python_enabled() or cancelled():
-        return {"ok": False, "error": "Python is disabled or the turn was cancelled."}, None
+        return {"ok": False, "retryable": False, "error": "Python is disabled or the turn was cancelled."}, None
     validate_arguments(args)
     if _gate.locked() or _jobs or time.monotonic() < _cooldown_until:
-        return {"ok": False, "error": "The Python worker is busy. Finish this reply without another execution attempt."}, None
+        return {"ok": False, "retryable": False, "error": "The Python worker is busy. Finish this reply without another execution attempt."}, None
     task = asyncio.create_task(_execute(args, turn_id, cancelled))
     _jobs.add(task)
 

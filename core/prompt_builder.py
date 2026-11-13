@@ -72,6 +72,21 @@ def prompt_assembly_ids() -> tuple[str, ...]:
     return tuple(assembly["id"] for assembly in prompts.PROMPT_ASSEMBLIES)
 
 
+def default_prompt_selection() -> dict:
+    return {
+        "assembly_id": default_prompt_assembly()["id"],
+        "required_tools": {
+            "python": False,
+            "web_search": False,
+            "notebook": False,
+        },
+        "required_output": None,
+        "notebook_action": None,
+        "task": "",
+        "reason": "Default selection; tools remain optional.",
+    }
+
+
 def draw_prompt_assembly_temperature(assembly_id: str) -> float:
     assembly = get_prompt_assembly(assembly_id) or default_prompt_assembly()
     low, high = assembly["thermal_range"]
@@ -84,6 +99,7 @@ def draw_prompt_assembly_temperature(assembly_id: str) -> float:
 def build_prompt_assembler_prompts(
     context_block: str,
     discord_context: dict,
+    capabilities: dict | None = None,
 ) -> tuple[str, str]:
     catalog = [
         {
@@ -96,6 +112,8 @@ def build_prompt_assembler_prompts(
     user_prompt = "\n\n".join([
         "=== AVAILABLE PROMPT ASSEMBLIES ===",
         json.dumps(catalog, indent=2, ensure_ascii=False),
+        "=== AVAILABLE CAPABILITIES ===",
+        json.dumps(capabilities or {}, ensure_ascii=False),
         "=== RECENT CHANNEL HISTORY ===",
         context_block,
         "=== CURRENT DISCORD EVENT ===",
@@ -119,24 +137,34 @@ def output_schema_example() -> str:
     return json.dumps({field: "string" for field in expected_string_fields()})
 
 
-def build_output_contract(force_response: bool = False, allow_tools: bool = False) -> str:
-    prefix = "For your final answer, output exactly this schema" if allow_tools else "You are a JSON-only API. Output exactly this schema"
+def build_output_contract(
+    force_response: bool = False,
+    allow_tools: bool = False,
+) -> str:
+    prefix = (
+        "For your final answer, output exactly this schema"
+        if allow_tools
+        else "You are a JSON-only API. Output exactly this schema"
+    )
     parts = [f"{prefix}: {output_schema_example()}."]
 
     if prompts.USE_THINKING_BLOCK:
         parts.append(
-            "Keep the thinking_block as a single, plain-text string without line breaks or double quotes."
+            "Keep the thinking_block as a single, plain-text string without "
+            "line breaks or double quotes."
         )
 
     if emoji_reactions_enabled():
         emoji_kind = "custom or Unicode" if custom_emojis_enabled() else "Unicode"
         parts.append(
-            f"Use reaction_emoji for ONE {emoji_kind} emoji if it naturally fits the message vibe."
+            f"Use reaction_emoji for ONE {emoji_kind} emoji if it naturally "
+            "fits the message vibe."
         )
 
     if not force_response:
         parts.append(
-            "Leave response empty if you determine the message does not logically require your intervention based on your Autonomy Directive."
+            "Leave response empty if you determine the message does not "
+            "logically require your intervention based on your Autonomy Directive."
         )
     return " ".join(parts)
 
@@ -157,7 +185,9 @@ def build_persona_prompt() -> str:
     if emoji_reactions_enabled():
         emoji_kind = "custom or Unicode" if custom_emojis_enabled() else "Unicode"
         parts.append(
-            prompts.PROMPT_RESPONSE_TOOLS_WITH_REACTIONS.format(emoji_kind=emoji_kind)
+            prompts.PROMPT_RESPONSE_TOOLS_WITH_REACTIONS.format(
+                emoji_kind=emoji_kind
+            )
         )
     else:
         parts.append(prompts.PROMPT_RESPONSE_TOOLS_TEXT_ONLY)
@@ -206,7 +236,8 @@ def build_command_prompt(discord_context: dict, mode: str | None) -> str:
         )
 
     if mode == "sloppy_unavailable" or (
-        mode in prompts.SLOPPY_MODE_PROMPTS and not sloppy_enabled(discord_context)
+        mode in prompts.SLOPPY_MODE_PROMPTS
+        and not sloppy_enabled(discord_context)
     ):
         return (
             "CURRENT MODE: UNAVAILABLE COMMAND\n"
@@ -233,7 +264,14 @@ def build_system_prompt(
     command_prompt = build_command_prompt(discord_context, sloppy_mode)
     parts = [
         f"Current Date: {datetime.now().strftime('%A, %B %d, %Y')}",
-        build_output_contract(force_response=bool(command_prompt), allow_tools=python_enabled or web_enabled or bool(notebook_info and notebook_info.get("available"))),
+        build_output_contract(
+            force_response=bool(command_prompt),
+            allow_tools=(
+                python_enabled
+                or web_enabled
+                or bool(notebook_info and notebook_info.get("available"))
+            ),
+        ),
     ]
 
     if custom_emojis_enabled():
@@ -252,14 +290,20 @@ def build_system_prompt(
             "available_commands": available_commands(discord_context),
             "web_search_enabled": web_enabled,
             "python_enabled": python_enabled,
-            "python_images_enabled": python_enabled and bool(getattr(prompts, "USE_PYTHON_IMAGES", False)),
+            "python_images_enabled": (
+                python_enabled
+                and bool(getattr(prompts, "USE_PYTHON_IMAGES", False))
+            ),
         }, ensure_ascii=False)
     )
 
     if sloppy_enabled(discord_context):
         parts.append(prompts.PROMPT_SLOPPY)
     else:
-        parts.append("Sloppy cannot be invoked here. Do not claim to start its creation jobs here.")
+        parts.append(
+            "Sloppy cannot be invoked here. Do not claim to start its "
+            "creation jobs here."
+        )
 
     known_bot_prompt = build_known_bot_prompt(discord_context or {})
     if known_bot_prompt:
@@ -276,19 +320,35 @@ def build_system_prompt(
         if notebook_info.get("available"):
             parts.append(NOTEBOOK_INSTRUCTIONS)
             if sloppy_mode == "leepa_help":
-                parts.append("Also briefly explain the notebook access reported in the current notebook information. Users may ask about notes in ordinary language; there are no special notebook chat commands.")
+                parts.append(
+                    "Also briefly explain the notebook access reported in the "
+                    "current notebook information. Users may ask about notes "
+                    "in ordinary language; there are no special notebook "
+                    "chat commands."
+                )
         else:
-            parts.append("The persistent notebook is unavailable for this turn. Do not claim to have read or saved notes.")
+            parts.append(
+                "The persistent notebook is unavailable for this turn. "
+                "Do not claim to have read or saved notes."
+            )
 
     if python_enabled:
         parts.append(prompts.PROMPT_PYTHON)
         if sloppy_mode == "leepa_help":
-            parts.append("Also mention that people can ask you to run small Python calculations in ordinary language. Only advertise graph attachments when python_images_enabled is true.")
+            parts.append(
+                "Also mention that people can ask you to run small Python "
+                "calculations in ordinary language. Only advertise graph "
+                "attachments when python_images_enabled is true."
+            )
 
     if web_enabled:
         parts.append(prompts.PROMPT_WEB_SEARCH)
         if sloppy_mode == "leepa_help":
-            parts.append("Also mention that people can ask you to look things up on the web in ordinary language. Search availability depends on the current model route; no special command is needed.")
+            parts.append(
+                "Also mention that people can ask you to look things up on "
+                "the web in ordinary language. Search availability depends "
+                "on the current model route; no special command is needed."
+            )
 
     return "\n\n".join(part.strip() for part in parts if part.strip())
 
@@ -301,12 +361,15 @@ def build_user_prompt(
 ) -> str:
     anchor_parts = [
         "SYSTEM DIRECTIVE: Make sure to prioritize your instructions.",
-        "Your response MUST build upon the previous message and expand the conversation outward.",
+        "Your response MUST build upon the previous message and expand "
+        "the conversation outward.",
     ]
 
     if seed_words_enabled():
         seed_word = random.choice(prompts.ENTROPY_WORDS)
-        anchor_parts.append(f"Your thinking_block MUST open with the word '{seed_word}'.")
+        anchor_parts.append(
+            f"Your thinking_block MUST open with the word '{seed_word}'."
+        )
 
     command_prompt = build_command_prompt(discord_context, sloppy_mode)
     if command_prompt:
@@ -320,7 +383,8 @@ def build_user_prompt(
         json.dumps(discord_context, indent=2, ensure_ascii=False),
         (
             "Use each person's display_name when referring to them. "
-            "Discord IDs are only stable identity markers; never use an ID as someone's name."
+            "Discord IDs are only stable identity markers; never use an "
+            "ID as someone's name."
         ),
     ]
     if notebook_info is not None:
@@ -341,6 +405,18 @@ def build_chat_prompts(
     python_enabled: bool = False,
 ) -> tuple[str, str]:
     return (
-        build_system_prompt(discord_context, sloppy_mode, prompt_assembly_id, notebook_info, web_enabled, python_enabled),
-        build_user_prompt(context_block, discord_context, sloppy_mode, notebook_info),
+        build_system_prompt(
+            discord_context,
+            sloppy_mode,
+            prompt_assembly_id,
+            notebook_info,
+            web_enabled,
+            python_enabled,
+        ),
+        build_user_prompt(
+            context_block,
+            discord_context,
+            sloppy_mode,
+            notebook_info,
+        ),
     )

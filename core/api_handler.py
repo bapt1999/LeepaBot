@@ -9,13 +9,14 @@ import time
 from typing import Callable
 from dotenv import load_dotenv
 from core import prompts
-from core.server_config import notebook_scope
+from core.server_config import notebook_scope, starts_sloppy_command
 from core.code_runner import python_enabled
-from core.tools import ToolSession, MAX_MODEL_REQUESTS, MAX_TOOL_ACTIONS, TOOL_TURN_SECONDS
+from core.tools import ToolSession, SPECS, MAX_MODEL_REQUESTS, MAX_TOOL_ACTIONS, TOOL_TURN_SECONDS
 from core.prompt_builder import (
     build_prompt_assembler_prompts,
     build_chat_prompts,
     default_prompt_assembly,
+    default_prompt_selection,
     draw_prompt_assembly_temperature,
     expected_string_fields,
     output_schema_example,
@@ -36,7 +37,7 @@ PROFILE_CHAIN = [
 JSON_FORMATTER_PROFILE = "json_formatter"
 FORMATTER_TEMPERATURE = 0.05
 
-# This call only chooses a prompt assembly. It never writes Leepa's response.
+# Selects response style and required work, without executing tools.
 PROMPT_ASSEMBLER_PROFILE = "prompt_assembler"
 PROMPT_ASSEMBLER_TEMPERATURE = 0.10
 
@@ -98,7 +99,7 @@ PROFILES = {
         "model": "deepseek/deepseek-chat-v3-0324",
         "capabilities": {"native_thinking": False, "temp_scalar": 1.0},
         "extra_payload": {
-            "max_tokens": 160,
+            "max_tokens": 500,
         },
         "omit_payload_fields": ("frequency_penalty", "presence_penalty"),
         "provider_routing": {
@@ -345,12 +346,30 @@ def parse_json_payload(content: str) -> dict:
 
 def parse_prompt_assembler_payload(content: str) -> dict:
     data = parse_json_object(content)
-    assembly_id = data.get("assembly_id", "")
-    reason = data.get("reason", "")
-    return {
-        "assembly_id": str(assembly_id).strip(),
-        "reason": str(reason).strip(),
-    }
+    keys = {"assembly_id", "required_tools", "required_output", "notebook_action", "task", "reason"}
+    if set(data) != keys:
+        raise ValueError("Invalid selector fields.")
+    if data["assembly_id"] not in prompt_assembly_ids():
+        raise ValueError("Unknown prompt assembly.")
+    required = data["required_tools"]
+    if not isinstance(required, dict) or set(required) != {"python", "web_search", "notebook"}:
+        raise ValueError("Invalid required_tools fields.")
+    if any(type(value) is not bool for value in required.values()):
+        raise ValueError("Tool requirements must be JSON booleans.")
+    if data["required_output"] not in (None, "png"):
+        raise ValueError("required_output must be null or png.")
+    action = data["notebook_action"]
+    if required["notebook"]:
+        if not isinstance(action, str) or action not in SPECS:
+            raise ValueError("Choose an actual notebook operation.")
+    elif action is not None:
+        raise ValueError("Optional notebook use must have notebook_action null.")
+    for key, limit in (("task", 400), ("reason", 300)):
+        if not isinstance(data[key], str) or len(data[key]) > limit:
+            raise ValueError(f"Invalid selector {key}.")
+    if data["required_output"] == "png":
+        required["python"] = True
+    return data
 
 
 def handle_error_response(error: dict) -> dict:
@@ -630,12 +649,14 @@ async def call_llm(
 async def select_prompt_assembly(
     context_block: str,
     discord_context: dict,
-) -> str:
-    """Asks the dedicated model to choose one approved prompt assembly."""
-    fallback_id = default_prompt_assembly()["id"]
+    capabilities: dict | None = None,
+) -> dict:
+    """Selects style and useful work from the full short-term context."""
+    fallback = default_prompt_selection()
     system_prompt, user_prompt = build_prompt_assembler_prompts(
         context_block,
         discord_context,
+        capabilities,
     )
 
     result = await call_llm(
@@ -650,24 +671,15 @@ async def select_prompt_assembly(
     if result.get("_failed"):
         logger.warning(
             "[PROMPT ASSEMBLER] Selection failed. Using '%s'.",
-            fallback_id,
+            fallback["assembly_id"],
         )
-        return fallback_id
-
-    assembly_id = result.get("assembly_id", "")
-    if assembly_id not in prompt_assembly_ids():
-        logger.warning(
-            "[PROMPT ASSEMBLER] Unknown selection %r. Using '%s'.",
-            assembly_id,
-        )
-        return fallback_id
+        return fallback
 
     logger.info(
-        "[PROMPT ASSEMBLER] Selected '%s': %s",
-        assembly_id,
-        result.get("reason", "No reason supplied."),
+        "[PROMPT ASSEMBLER] %s",
+        json.dumps(result, ensure_ascii=False),
     )
-    return assembly_id
+    return result
 
 def _cancelled_response() -> dict:
     return {"response": "", "reaction_emoji": "", "internal_mood": "cancelled", "_failed": True, "_cancelled": True}
@@ -685,6 +697,9 @@ async def call_llm_with_fallback(system_prompt: str, user_prompt: str, thermal_s
 
     for i, profile_key in enumerate(PROFILE_CHAIN):
         if start_profile in PROFILE_CHAIN and i < PROFILE_CHAIN.index(start_profile):
+            continue
+        if session is not None and session.needs_search_route() and PROFILES[profile_key]["provider"] != "openrouter":
+            logger.info("[TOOLS] Skipping %s: required web search is still pending.", profile_key)
             continue
         # Try this profile, retrying on transient rate_limit/timeout moods
         # before giving up on it and dropping to the next profile.
@@ -747,6 +762,8 @@ async def _tool_turn(system_prompt: str, user_prompt: str, thermal_scalar: float
         if cancelled():
             return _cancelled_response()
         if result.get("_failed") or session.cancelled():
+            if session.missing_requirements():
+                return session.failure_response("Model route failed or turn expired.")
             return result if result.get("_failed") else handle_error_response({"message": "Tool turn ended."})
         profile = result["_profile"]
         message = result["_message"]
@@ -785,9 +802,17 @@ async def _tool_turn(system_prompt: str, user_prompt: str, thermal_scalar: float
             continue
         if evidence:
             messages.append(evidence)
+        if session.missing_requirements():
+            if session.request_completion(messages, message, final_only):
+                continue
+            return session.failure_response("Required actions were not completed.")
         try:
             parsed = await _parse_or_reformat(message.get("content") or "", True, profile)
             if not parsed.get("_failed"):
+                if session.selection.get("required_output") == "png" and starts_sloppy_command(parsed.get("response", "")):
+                    if session.request_completion(messages, message, final_only, "Return an ordinary reply accompanying the graph, not a Sloppy command."):
+                        continue
+                    return session.failure_response("A Sloppy command would suppress the required attachment.")
                 return parsed
         except (TypeError, ValueError):
             logger.exception("[TOOLS] Final response could not be parsed.")
@@ -796,7 +821,11 @@ async def _tool_turn(system_prompt: str, user_prompt: str, thermal_scalar: float
             break
         profile = PROFILE_CHAIN[next_index]
         logger.warning("[TOOLS] Trying %s with the existing tool history.", profile)
-    return _cancelled_response() if cancelled() else handle_error_response({"message": "Tool turn ended without a usable response."})
+    if cancelled():
+        return _cancelled_response()
+    if session.missing_requirements():
+        return session.failure_response("Turn ended without completing required work.")
+    return handle_error_response({"message": "Tool turn ended without a usable response."})
 
 
 async def generate_chat_response(
@@ -812,18 +841,7 @@ async def generate_chat_response(
     prompt_assembly_id = None
     thermal_scalar = None
 
-    # Forced Sloppy modes already have a narrow prompt and exact output shape.
-    if prompts.USE_PROMPT_ASSEMBLER and sloppy_mode is None:
-        prompt_assembly_id = await select_prompt_assembly(
-            context_block,
-            discord_context,
-        )
-        thermal_scalar = draw_prompt_assembly_temperature(prompt_assembly_id)
-
-    if cancelled():
-        return _cancelled_response()
-
-    session = ToolSession(discord_context, cancelled) if notebook_scope(discord_context) or prompts.USE_WEB_SEARCH or python_enabled() else None
+    session = ToolSession(discord_context, cancelled) if notebook_scope(discord_context) or prompts.USE_WEB_SEARCH or python_enabled() or prompts.USE_PROMPT_ASSEMBLER else None
     notebook_info = None
     if session is not None and session.scope:
         try:
@@ -836,6 +854,19 @@ async def generate_chat_response(
             session.notebook = None
             notebook_info = {"available": False}
 
+    if cancelled():
+        if session is not None:
+            session.closed = True
+        return _cancelled_response()
+
+    # Dedicated Sloppy commands retain their existing response contract.
+    if prompts.USE_PROMPT_ASSEMBLER and sloppy_mode is None:
+        capabilities = session.capabilities()
+        capabilities["web_search"] = capabilities["web_search"] and bool(PROVIDERS["openrouter"].get("key"))
+        selection = await select_prompt_assembly(context_block, discord_context, capabilities)
+        session.set_selection(selection)
+        prompt_assembly_id = selection["assembly_id"]
+        thermal_scalar = draw_prompt_assembly_temperature(prompt_assembly_id)
     if cancelled():
         if session is not None:
             session.closed = True
@@ -868,6 +899,8 @@ async def generate_chat_response(
             if cancelled():
                 return _cancelled_response()
             logger.warning("[TOOLS] Turn exceeded %.0f seconds.", TOOL_TURN_SECONDS)
+            if session.missing_requirements():
+                return session.failure_response("Turn timed out.")
             return {"response": "", "reaction_emoji": "", "internal_mood": "timeout", "_failed": True}
         finally:
             session.closed = True
