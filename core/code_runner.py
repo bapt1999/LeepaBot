@@ -177,7 +177,13 @@ async def _execute(args, turn_id, cancelled):
                 image = await asyncio.to_thread(clean_png, result["png"], args["image_description"])
                 output.update(image_queued=True, image_description=image.description, image_bytes=len(image.data))
             except (ValueError, ImportError) as exc:
+                output["ok"] = False
                 output["image_error"] = str(exc)[:200]
+                output["error"] = (
+                    "Python finished, but the requested graph could not be attached. "
+                    "If another Python run is available, correct the image error and "
+                    "create the graph again. No image is queued."
+                )
         logger.info("[CODE] turn=%s %.2fs result=%s", turn_id, time.monotonic() - started, json.dumps(output, ensure_ascii=True))
         return output, image
 

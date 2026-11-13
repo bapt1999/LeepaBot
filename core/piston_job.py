@@ -58,6 +58,7 @@ def main():
     work.mkdir()
     environment = dict(os.environ)
     environment.update({
+        "MPLCONFIGDIR": str(work / ".matplotlib"),
         "MPLBACKEND": "Agg", "OPENBLAS_NUM_THREADS": "1",
         "OMP_NUM_THREADS": "1", "MKL_NUM_THREADS": "1",
         "NUMEXPR_MAX_THREADS": "1", "PYTHONIOENCODING": "utf-8",

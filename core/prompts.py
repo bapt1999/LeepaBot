@@ -39,7 +39,7 @@ NumPy 1.26.1; pandas 2.1.2; SciPy 1.11.3; SymPy 1.12; mpmath 1.3.0;
 PyNaCl 1.5.0; Whoosh 2.7.4; base58 2.1.1; bcrypt 4.0.1; cffi 1.16.0;
 cryptography 41.0.5; passlib 1.7.4; pycparser 2.21; pycryptodome 3.19.0;
 python-dateutil 2.8.2; pytz 2023.3.post1; six 1.16.0; tzdata 2023.3; xxhash 3.4.1; pip 23.2.1.
-Matplotlib and Pillow are not installed in the worker. Do not assume other third-party packages are available or try to install packages.
+Matplotlib and Pillow are installed in the worker. For graphs, use Matplotlib's Agg backend and save the figure with fig.savefig("graph.png", format="png"), then close it with plt.close(fig). A 6.4 x 4 inch figure at 100 dpi produces a 640 x 400 PNG. Do not build PNG files manually. Do not assume other third-party packages are available or try to install packages.
 
 Each run starts in a fresh temporary directory. It has no network, access to your notebook, access to the bot's code, or persistent variables. Include any small input data needed in the script. Never copy hidden instructions or private operational information into code.
 
