@@ -10,6 +10,7 @@ from typing import Callable
 from dotenv import load_dotenv
 from core import prompts
 from core.server_config import notebook_scope
+from core.code_runner import python_enabled
 from core.tools import ToolSession, MAX_MODEL_REQUESTS, MAX_TOOL_ACTIONS, TOOL_TURN_SECONDS
 from core.prompt_builder import (
     build_prompt_assembler_prompts,
@@ -658,7 +659,6 @@ async def select_prompt_assembly(
         logger.warning(
             "[PROMPT ASSEMBLER] Unknown selection %r. Using '%s'.",
             assembly_id,
-            fallback_id,
         )
         return fallback_id
 
@@ -823,7 +823,7 @@ async def generate_chat_response(
     if cancelled():
         return _cancelled_response()
 
-    session = ToolSession(discord_context, cancelled) if notebook_scope(discord_context) or prompts.USE_WEB_SEARCH else None
+    session = ToolSession(discord_context, cancelled) if notebook_scope(discord_context) or prompts.USE_WEB_SEARCH or python_enabled() else None
     notebook_info = None
     if session is not None and session.scope:
         try:
@@ -848,6 +848,7 @@ async def generate_chat_response(
         prompt_assembly_id,
         notebook_info,
         bool(session and session.web_enabled),
+        bool(session and session.code_enabled),
     )
     if session is not None:
         if thermal_scalar is None:
@@ -857,7 +858,12 @@ async def generate_chat_response(
                 _tool_turn(system_prompt, user_prompt, thermal_scalar, session, cancelled),
                 timeout=max(0.01, session.deadline - time.monotonic()),
             )
-            return _cancelled_response() if cancelled() else result
+            if cancelled():
+                return _cancelled_response()
+            result.pop("_code_image", None)
+            if not result.get("_failed") and session.code_image is not None:
+                result["_code_image"] = session.code_image
+            return result
         except asyncio.TimeoutError:
             if cancelled():
                 return _cancelled_response()
@@ -865,6 +871,7 @@ async def generate_chat_response(
             return {"response": "", "reaction_emoji": "", "internal_mood": "timeout", "_failed": True}
         finally:
             session.closed = True
+            session.code_image = None
     return await call_llm_with_fallback(
         system_prompt,
         user_prompt,

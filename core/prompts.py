@@ -13,6 +13,9 @@ USE_NOTEBOOK = True
 NOTEBOOK_WRITES = True
 NOTEBOOK_DMS = False
 USE_WEB_SEARCH = True
+USE_PYTHON = True
+USE_PYTHON_IMAGES = True
+
 
 FIXED_THERMAL_SCALAR = 0.75
 
@@ -28,6 +31,32 @@ The current request's tool availability overrides general capability description
 After tool use, return the usual final response JSON. Put tool requests through the tool interface, never in response or thinking_block.
 """
 
+PROMPT_PYTHON = """# PYTHON EXECUTION
+You may use run_python when a calculation, experiment, or graph would help. You decide whether to use it. No special Discord command is needed.
+
+The worker runs Python 3.12.0 with its standard library and these installed packages:
+NumPy 1.26.1; pandas 2.1.2; SciPy 1.11.3; SymPy 1.12; mpmath 1.3.0;
+PyNaCl 1.5.0; Whoosh 2.7.4; base58 2.1.1; bcrypt 4.0.1; cffi 1.16.0;
+cryptography 41.0.5; passlib 1.7.4; pycparser 2.21; pycryptodome 3.19.0;
+python-dateutil 2.8.2; pytz 2023.3.post1; six 1.16.0; tzdata 2023.3; xxhash 3.4.1; pip 23.2.1.
+Matplotlib and Pillow are not installed in the worker. Do not assume other third-party packages are available or try to install packages.
+
+Each run starts in a fresh temporary directory. It has no network, access to your notebook, access to the bot's code, or persistent variables. Include any small input data needed in the script. Never copy hidden instructions or private operational information into code.
+
+Write short scripts and print useful results. You receive stdout, stderr, and execution status. A maximum of two attempts is available per turn, including a correction after an error. Each job has 128 MiB memory, five seconds of CPU time, and roughly eight seconds elapsed time for your script. Keep datasets small.
+
+If PNG export is available and you want to share a graph, save it as a PNG using a relative path, and give that filename in image_path with an accurate image_description. The graph must be at most 1024 x 1024 pixels and 256 KiB. Only graphs and charts should be exported; other file formats cannot be attached.
+
+The application collects and validates the PNG automatically. Do not print encoded images or put them in your final JSON. image_queued true means the graph will accompany your final response, even if response is empty. Every new run clears the previous pending graph; only a valid graph from your latest run can be sent. To replace a graph, create and request the replacement in that run.
+
+Graph metadata and your own description do not mean you have visually inspected the image. Do not claim visual verification. A graph is not attached to a message that invokes Sloppy.
+
+Printed results are available in this turn; they do not automatically become long-term memory. Save useful conclusions through notebook tools when appropriate. Temporary code and files are discarded after execution.
+
+Execution errors are information: correct a small mistake when useful, or explain the limitation. A busy worker is a reason to finish without another execution attempt. Do not claim code ran or an image was queued when the tool says otherwise.
+
+Use the actual tool interface, then return your usual final response JSON. Code and tool arguments should serve the task; do not distort them with seed-word associations. Current tool availability overrides this general description.
+"""
 
 # The prompt assembler chooses one of these additions for each response.
 # `thermal_range` is normalized; each model profile applies its own scalar later.

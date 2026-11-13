@@ -5,6 +5,8 @@ import re
 import os
 import logging
 import time
+from io import BytesIO
+import discord
 from dotenv import load_dotenv
 from core import prompts
 from core.api_handler import generate_chat_response, summarize_chat_logs
@@ -14,6 +16,7 @@ from core.memory_queue import ShortTermMemory
 from core.image_analysis import analyze_image
 from core.server_config import get_command_mode, sloppy_enabled, starts_sloppy_command, notebook_scope
 from core.tools import TOOL_TURN_SECONDS
+from core.code_runner import CodeImage, python_enabled, images_enabled
 
 # Initializes logging and loads environment variables from the .env file.
 logger = logging.getLogger(__name__)
@@ -341,7 +344,7 @@ async def process_message(message, bot_user) -> None:
     )
     active_processing_locks[message.id] = {
         "status": lock_status,
-        "expires": time.time() + (TOOL_TURN_SECONDS + 90.0 if notebook_scope(discord_context) or prompts.USE_WEB_SEARCH else 60.0),
+        "expires": time.time() + (TOOL_TURN_SECONDS + 90.0 if notebook_scope(discord_context) or prompts.USE_WEB_SEARCH or python_enabled() else 60.0),
     }
 
     try:
@@ -358,6 +361,10 @@ async def process_message(message, bot_user) -> None:
             logger.info("Turn %s cancelled because another bot replied first.", message.id)
             return
 
+        code_image = response_data.pop("_code_image", None)
+        if not isinstance(code_image, CodeImage) or not images_enabled() or response_data.get("_failed"):
+            code_image = None
+
         logger.info(
             f"<<< OUTGOING\n"
             f"{json.dumps(response_data, indent=2, ensure_ascii=False)}"
@@ -367,6 +374,9 @@ async def process_message(message, bot_user) -> None:
         if not sloppy_enabled(discord_context) and starts_sloppy_command(reply_text):
             logger.warning("Sloppy command blocked: creation commands are unavailable in this location.")
             reply_text = ""
+        if code_image and starts_sloppy_command(reply_text):
+            logger.info("[CODE] Graph omitted from a Sloppy command message.")
+            code_image = None
         reaction_emoji = (
             response_data.get("reaction_emoji", "").strip()
             if prompts.USE_EMOJI_REACTIONS
@@ -404,14 +414,26 @@ async def process_message(message, bot_user) -> None:
         sent_reply = None
         reply_was_sent = False
 
-        if reply_text:
+        if reply_text or code_image:
+            attachment = None
             try:
-                sent_reply = await message.reply(reply_text)
+                options = {}
+                if code_image:
+                    attachment = discord.File(
+                        BytesIO(code_image.data), filename=code_image.filename,
+                        description=code_image.description,
+                    )
+                    options["file"] = attachment
+                sent_reply = await message.reply(reply_text or None, **options)
                 reply_was_sent = True
+                if code_image:
+                    logger.info("[CODE] Published %s (%s bytes) in channel %s.", code_image.filename, len(code_image.data), message.channel.id)
             except Exception as e:
-                logger.error(
-                    f"Discord API failure on message reply: {e}"
-                )
+                logger.error(f"Discord API failure on message reply: {e}")
+            finally:
+                if attachment is not None:
+                    attachment.close()
+                    attachment.fp.close()
 
         if reply_was_sent and bot_key is not None:
             maybe_pause_bot_replies(
@@ -440,6 +462,13 @@ async def process_message(message, bot_user) -> None:
             memory_log = f"{state_tag}{reply_text}"
         else:
             memory_log = f"{state_tag}(Silence)"
+
+        if code_image:
+            if reply_was_sent:
+                image_note = f"[Generated graph attached: {code_image.description}]"
+                memory_log = f"{state_tag}{reply_text}\n{image_note}".strip()
+            else:
+                memory_log += "\n[Generated graph could not be delivered.]"
 
         local_memory.add_message(
             "Leepa",

@@ -227,12 +227,13 @@ def build_system_prompt(
     prompt_assembly_id: str | None = None,
     notebook_info: dict | None = None,
     web_enabled: bool = False,
+    python_enabled: bool = False,
 ) -> str:
     discord_context = discord_context or {}
     command_prompt = build_command_prompt(discord_context, sloppy_mode)
     parts = [
         f"Current Date: {datetime.now().strftime('%A, %B %d, %Y')}",
-        build_output_contract(force_response=bool(command_prompt), allow_tools=web_enabled or bool(notebook_info and notebook_info.get("available"))),
+        build_output_contract(force_response=bool(command_prompt), allow_tools=python_enabled or web_enabled or bool(notebook_info and notebook_info.get("available"))),
     ]
 
     if custom_emojis_enabled():
@@ -250,6 +251,8 @@ def build_system_prompt(
             "sloppy_available": sloppy_enabled(discord_context),
             "available_commands": available_commands(discord_context),
             "web_search_enabled": web_enabled,
+            "python_enabled": python_enabled,
+            "python_images_enabled": python_enabled and bool(getattr(prompts, "USE_PYTHON_IMAGES", False)),
         }, ensure_ascii=False)
     )
 
@@ -276,6 +279,11 @@ def build_system_prompt(
                 parts.append("Also briefly explain the notebook access reported in the current notebook information. Users may ask about notes in ordinary language; there are no special notebook chat commands.")
         else:
             parts.append("The persistent notebook is unavailable for this turn. Do not claim to have read or saved notes.")
+
+    if python_enabled:
+        parts.append(prompts.PROMPT_PYTHON)
+        if sloppy_mode == "leepa_help":
+            parts.append("Also mention that people can ask you to run small Python calculations in ordinary language. Only advertise graph attachments when python_images_enabled is true.")
 
     if web_enabled:
         parts.append(prompts.PROMPT_WEB_SEARCH)
@@ -330,8 +338,9 @@ def build_chat_prompts(
     prompt_assembly_id: str | None = None,
     notebook_info: dict | None = None,
     web_enabled: bool = False,
+    python_enabled: bool = False,
 ) -> tuple[str, str]:
     return (
-        build_system_prompt(discord_context, sloppy_mode, prompt_assembly_id, notebook_info, web_enabled),
+        build_system_prompt(discord_context, sloppy_mode, prompt_assembly_id, notebook_info, web_enabled, python_enabled),
         build_user_prompt(context_block, discord_context, sloppy_mode, notebook_info),
     )

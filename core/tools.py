@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 
 from core import prompts, server_config
 from core.notebook import Notebook, NotebookError
+from core import code_runner
 
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,9 @@ class ToolSession:
         self.cancelled = lambda: self.closed or time.monotonic() >= self.deadline or cancelled()
         self.actions = 0
         self.requests = 0
+        self.code_enabled = code_runner.python_enabled()
+        self.code_runs = 0
+        self.code_image = None
         self.web_enabled = prompts.USE_WEB_SEARCH
         self.searches_remaining = MAX_WEB_SEARCHES if self.web_enabled else 0
         self.sources = {}
@@ -101,6 +105,8 @@ class ToolSession:
         definitions = []
         if not final_only and self.notebook is not None and self.actions < MAX_TOOL_ACTIONS:
             definitions.extend(self.definitions)
+        if not final_only and self.code_enabled and self.code_runs < code_runner.MAX_CODE_RUNS:
+            definitions.append(code_runner.tool_definition())
         allowance = self.searches_remaining if provider == "openrouter" and not final_only else 0
         if allowance:
             definitions.append({
@@ -121,8 +127,10 @@ class ToolSession:
             "CURRENT TOOL AVAILABILITY FOR THIS REQUEST:\n"
             f"Web search: {'available' if allowance else 'unavailable'}; {allowance} searches allowed.\n"
             f"Notebook operations available: {0 if final_only else remaining_notes}.\n"
+            f"Python runs available: {max(0, code_runner.MAX_CODE_RUNS - self.code_runs) if self.code_enabled and not final_only else 0}.\n"
+            f"PNG export: {'available' if self.code_enabled and code_runner.images_enabled() else 'unavailable'}.\n"
             "Use only the tools offered in this request. You may use earlier results as data. "
-            "Do not claim new searches or notebook operations that did not happen."
+            "Do not claim searches, execution, or notebook operations that did not happen."
         )
         request_messages = [dict(message) for message in messages]
         request_messages[0]["content"] += "\n\n" + status
@@ -187,9 +195,32 @@ class ToolSession:
             logger.info("[WEB] Source: %r %s", source["title"], url)
         return sources
 
+    async def _execute_python(self, call: dict) -> dict:
+        self.code_runs += 1
+        self.code_image = None
+        try:
+            if not self.code_enabled or self.code_runs > code_runner.MAX_CODE_RUNS or self.cancelled():
+                raise ValueError("Python is unavailable or its turn limit was reached.")
+            raw = call["function"].get("arguments", "")
+            if not isinstance(raw, str) or len(raw) > 100000:
+                raise ValueError("Invalid Python tool arguments.")
+            args = json.loads(raw, object_pairs_hook=_unique_object)
+            result, image = await code_runner.run_python(args, self.turn_id, self.cancelled)
+            if not self.cancelled():
+                self.code_image = image
+            return result
+        except ValueError as exc:
+            logger.warning("[CODE] turn=%s: %s", self.turn_id, exc)
+            return {"ok": False, "error": str(exc), "image_queued": False}
+        except Exception:
+            logger.exception("[CODE] turn=%s execution failed", self.turn_id)
+            return {"ok": False, "error": "Python execution failed. No image is queued."}
+
     async def execute(self, call: dict) -> dict:
-        self.actions += 1
         name = call.get("function", {}).get("name", "")
+        if name == "run_python":
+            return await self._execute_python(call)
+        self.actions += 1
         started = time.monotonic()
         try:
             if self.actions > MAX_TOOL_ACTIONS or self.cancelled():
