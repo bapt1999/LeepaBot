@@ -21,7 +21,7 @@ RAKUN_ID = _read_discord_id("RAKUN_ID")
 SLOPPY_ID = _read_discord_id("SLOPPY_ID")
 BUNS_ID = _read_discord_id("BUNS_ID")
 WARRO_ID = _read_discord_id("WARRO_ID")
-
+GRINCH_ID = _read_discord_id("GRINCH_ID")
 
 # Add future server bots here after giving them an environment variable above.
 KNOWN_BOT_IDS = {

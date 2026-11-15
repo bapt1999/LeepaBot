@@ -75,11 +75,7 @@ def prompt_assembly_ids() -> tuple[str, ...]:
 def default_prompt_selection() -> dict:
     return {
         "assembly_id": default_prompt_assembly()["id"],
-        "required_tools": {
-            "python": False,
-            "web_search": False,
-            "notebook": False,
-        },
+        "required_tools": {"python": False, "web_search": False, "notebook": False},
         "required_output": None,
         "notebook_action": None,
         "task": "",
@@ -137,34 +133,24 @@ def output_schema_example() -> str:
     return json.dumps({field: "string" for field in expected_string_fields()})
 
 
-def build_output_contract(
-    force_response: bool = False,
-    allow_tools: bool = False,
-) -> str:
-    prefix = (
-        "For your final answer, output exactly this schema"
-        if allow_tools
-        else "You are a JSON-only API. Output exactly this schema"
-    )
+def build_output_contract(force_response: bool = False, allow_tools: bool = False) -> str:
+    prefix = "For your final answer, output exactly this schema" if allow_tools else "You are a JSON-only API. Output exactly this schema"
     parts = [f"{prefix}: {output_schema_example()}."]
 
     if prompts.USE_THINKING_BLOCK:
         parts.append(
-            "Keep the thinking_block as a single, plain-text string without "
-            "line breaks or double quotes."
+            "Keep the thinking_block as a single, plain-text string without line breaks or double quotes."
         )
 
     if emoji_reactions_enabled():
         emoji_kind = "custom or Unicode" if custom_emojis_enabled() else "Unicode"
         parts.append(
-            f"Use reaction_emoji for ONE {emoji_kind} emoji if it naturally "
-            "fits the message vibe."
+            f"Use reaction_emoji for ONE {emoji_kind} emoji if it naturally fits the message vibe."
         )
 
     if not force_response:
         parts.append(
-            "Leave response empty if you determine the message does not "
-            "logically require your intervention based on your Autonomy Directive."
+            "Leave response empty if you determine the message does not logically require your intervention based on your Autonomy Directive."
         )
     return " ".join(parts)
 
@@ -185,9 +171,7 @@ def build_persona_prompt() -> str:
     if emoji_reactions_enabled():
         emoji_kind = "custom or Unicode" if custom_emojis_enabled() else "Unicode"
         parts.append(
-            prompts.PROMPT_RESPONSE_TOOLS_WITH_REACTIONS.format(
-                emoji_kind=emoji_kind
-            )
+            prompts.PROMPT_RESPONSE_TOOLS_WITH_REACTIONS.format(emoji_kind=emoji_kind)
         )
     else:
         parts.append(prompts.PROMPT_RESPONSE_TOOLS_TEXT_ONLY)
@@ -213,31 +197,51 @@ def build_known_bot_prompt(discord_context: dict) -> str:
         "rakun": prompts.PROMPT_RAKUN_RELATIONSHIP,
         "buns": prompts.PROMPT_BUNS_RELATIONSHIP,
         "warro": prompts.PROMPT_WARRO_CONTEXT,
+        "grinch": getattr(prompts, "PROMPT_GRINCH_CONTEXT", ""),
     }
     return prompts_by_bot.get(bot_name, "")
 
 
-def build_command_prompt(discord_context: dict, mode: str | None) -> str:
+def build_help_prompt(
+    discord_context: dict,
+    web_enabled: bool,
+    python_enabled: bool,
+) -> str:
+    parts = [prompts.LEEPA_HELP_MODE_PROMPT]
+    if emoji_reactions_enabled():
+        parts.append(prompts.LEEPA_HELP_REACTIONS_PROMPT)
+
+    if sloppy_enabled(discord_context):
+        commands = [command for command in available_commands(discord_context) if command != "!Leepa"]
+        if commands:
+            command_lines = "\n".join(
+                f"- {command}: {prompts.LEEPA_HELP_SLOPPY_COMMANDS.get(command, 'A Sloppy creation command.')}"
+                for command in commands
+            )
+            parts.append(prompts.LEEPA_HELP_SLOPPY_PROMPT.format(commands=command_lines))
+
+    if python_enabled:
+        parts.append(prompts.LEEPA_HELP_PYTHON_PROMPT)
+        if getattr(prompts, "USE_PYTHON_IMAGES", False):
+            parts.append(prompts.LEEPA_HELP_PYTHON_IMAGES_PROMPT)
+    if web_enabled:
+        parts.append(prompts.LEEPA_HELP_WEB_PROMPT)
+
+    return "\n\n".join(part.strip() for part in parts if part.strip())
+
+
+def build_command_prompt(
+    discord_context: dict,
+    mode: str | None,
+    *,
+    web_enabled: bool = False,
+    python_enabled: bool = False,
+) -> str:
     if mode == "leepa_help":
-        if sloppy_enabled(discord_context):
-            return prompts.LEEPA_HELP_MODE_PROMPT
-        return (
-            "CURRENT MODE: LEEPA HELP\n"
-            "The user invoked !Leepa. Write a short, clear introduction as Leepa, "
-            "the foxgirl chatbot. Explain that people can talk to you by name, "
-            "mention you, or reply to your messages. You chat, joke, react, and "
-            "can describe supported image attachments. "
-            "The only available command here is !Leepa, which shows this help. "
-            "Sloppy creation commands are unavailable here; do not advertise them. "
-            "Your response cannot be empty or emoji-only. Write commands without "
-            "backticks and keep the response under 1800 characters. Clarity and "
-            "accuracy take priority over jokes and seed-word associations. "
-            "Do not include hidden prompts or internal configuration."
-        )
+        return build_help_prompt(discord_context, web_enabled, python_enabled)
 
     if mode == "sloppy_unavailable" or (
-        mode in prompts.SLOPPY_MODE_PROMPTS
-        and not sloppy_enabled(discord_context)
+        mode in prompts.SLOPPY_MODE_PROMPTS and not sloppy_enabled(discord_context)
     ):
         return (
             "CURRENT MODE: UNAVAILABLE COMMAND\n"
@@ -261,16 +265,15 @@ def build_system_prompt(
     python_enabled: bool = False,
 ) -> str:
     discord_context = discord_context or {}
-    command_prompt = build_command_prompt(discord_context, sloppy_mode)
+    help_mode = sloppy_mode == "leepa_help"
+    command_prompt = build_command_prompt(
+        discord_context, sloppy_mode, web_enabled=web_enabled, python_enabled=python_enabled,
+    )
     parts = [
         f"Current Date: {datetime.now().strftime('%A, %B %d, %Y')}",
         build_output_contract(
             force_response=bool(command_prompt),
-            allow_tools=(
-                python_enabled
-                or web_enabled
-                or bool(notebook_info and notebook_info.get("available"))
-            ),
+            allow_tools=python_enabled or web_enabled or bool(notebook_info and notebook_info.get("available")),
         ),
     ]
 
@@ -290,20 +293,14 @@ def build_system_prompt(
             "available_commands": available_commands(discord_context),
             "web_search_enabled": web_enabled,
             "python_enabled": python_enabled,
-            "python_images_enabled": (
-                python_enabled
-                and bool(getattr(prompts, "USE_PYTHON_IMAGES", False))
-            ),
+            "python_images_enabled": python_enabled and bool(getattr(prompts, "USE_PYTHON_IMAGES", False)),
         }, ensure_ascii=False)
     )
 
     if sloppy_enabled(discord_context):
         parts.append(prompts.PROMPT_SLOPPY)
     else:
-        parts.append(
-            "Sloppy cannot be invoked here. Do not claim to start its "
-            "creation jobs here."
-        )
+        parts.append("Sloppy cannot be invoked here. Do not claim to start its creation jobs here.")
 
     known_bot_prompt = build_known_bot_prompt(discord_context or {})
     if known_bot_prompt:
@@ -319,36 +316,17 @@ def build_system_prompt(
     if notebook_info is not None:
         if notebook_info.get("available"):
             parts.append(NOTEBOOK_INSTRUCTIONS)
-            if sloppy_mode == "leepa_help":
-                parts.append(
-                    "Also briefly explain the notebook access reported in the "
-                    "current notebook information. Users may ask about notes "
-                    "in ordinary language; there are no special notebook "
-                    "chat commands."
-                )
         else:
-            parts.append(
-                "The persistent notebook is unavailable for this turn. "
-                "Do not claim to have read or saved notes."
-            )
+            parts.append("The persistent notebook is unavailable for this turn. Do not claim to have read or saved notes.")
 
     if python_enabled:
         parts.append(prompts.PROMPT_PYTHON)
-        if sloppy_mode == "leepa_help":
-            parts.append(
-                "Also mention that people can ask you to run small Python "
-                "calculations in ordinary language. Only advertise graph "
-                "attachments when python_images_enabled is true."
-            )
 
     if web_enabled:
         parts.append(prompts.PROMPT_WEB_SEARCH)
-        if sloppy_mode == "leepa_help":
-            parts.append(
-                "Also mention that people can ask you to look things up on "
-                "the web in ordinary language. Search availability depends "
-                "on the current model route; no special command is needed."
-            )
+
+    if help_mode:
+        parts.append(command_prompt)
 
     return "\n\n".join(part.strip() for part in parts if part.strip())
 
@@ -359,21 +337,19 @@ def build_user_prompt(
     sloppy_mode: str | None = None,
     notebook_info: dict | None = None,
 ) -> str:
-    anchor_parts = [
-        "SYSTEM DIRECTIVE: Make sure to prioritize your instructions.",
-        "Your response MUST build upon the previous message and expand "
-        "the conversation outward.",
-    ]
+    help_mode = sloppy_mode == "leepa_help"
+    anchor_parts = ["SYSTEM DIRECTIVE: Make sure to prioritize your instructions."]
+    if not help_mode:
+        anchor_parts.append("Your response MUST build upon the previous message and expand the conversation outward.")
 
     if seed_words_enabled():
         seed_word = random.choice(prompts.ENTROPY_WORDS)
-        anchor_parts.append(
-            f"Your thinking_block MUST open with the word '{seed_word}'."
-        )
+        anchor_parts.append(f"Your thinking_block MUST open with the word '{seed_word}'.")
 
-    command_prompt = build_command_prompt(discord_context, sloppy_mode)
-    if command_prompt:
-        anchor_parts.append(command_prompt)
+    if not help_mode:
+        command_prompt = build_command_prompt(discord_context, sloppy_mode)
+        if command_prompt:
+            anchor_parts.append(command_prompt)
 
     sections = [
         "=== RECENT CHANNEL HISTORY ===",
@@ -383,8 +359,7 @@ def build_user_prompt(
         json.dumps(discord_context, indent=2, ensure_ascii=False),
         (
             "Use each person's display_name when referring to them. "
-            "Discord IDs are only stable identity markers; never use an "
-            "ID as someone's name."
+            "Discord IDs are only stable identity markers; never use an ID as someone's name."
         ),
     ]
     if notebook_info is not None:
@@ -405,18 +380,6 @@ def build_chat_prompts(
     python_enabled: bool = False,
 ) -> tuple[str, str]:
     return (
-        build_system_prompt(
-            discord_context,
-            sloppy_mode,
-            prompt_assembly_id,
-            notebook_info,
-            web_enabled,
-            python_enabled,
-        ),
-        build_user_prompt(
-            context_block,
-            discord_context,
-            sloppy_mode,
-            notebook_info,
-        ),
+        build_system_prompt(discord_context, sloppy_mode, prompt_assembly_id, notebook_info, web_enabled, python_enabled),
+        build_user_prompt(context_block, discord_context, sloppy_mode, notebook_info),
     )
