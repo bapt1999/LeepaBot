@@ -1,0 +1,584 @@
+LEEPABOT — OBJECTIVE, CONTEXT, AND WORK HISTORY
+Updated: 15 November 2026
+
+PURPOSE OF THIS RECORD
+
+This document records the decisions and progression of the current work-session
+conversation, including superseded implementations and ideas that were not built.
+The README describes the present architecture and operation. The revamp plan
+records where the original eight steps stand.
+
+The record combines the conversation, the owner's pasted logs and test reports,
+and the latest relevant source versions saved during this session. It is not a
+fresh read of the running VM or GitHub. Several user edits, especially the latest
+persona, emojis, removed examples, bot IDs, and channel configuration, exist in
+the owner's copies and must not be reconstructed from older attachments. Exact
+dates for individual decisions are not invented; the account below follows their
+order in the conversation. Dates inside runtime logs are evidence of those logs.
+
+
+WHAT THE PROJECT IS TRYING TO ACHIEVE
+
+Leepa is a Discord participant with a personality and some independence. She can
+be funny, rude, affectionate, strange, useful, or quiet depending on the actual
+conversation. She is not intended to turn every message into generic assistant
+service, but this is not an excuse to evade a real interaction or pretend to use
+a tool. When she undertakes work, the work should happen.
+
+The desired behavior has evolved. Constant random shitposting stopped being
+funny. Constant references to her imaginary body, foxgirl identity, snacks, naps,
+or equivalent self-focused roleplay also became unwelcome. These were examples
+of a broader failure to engage, not an exhaustive blacklist. Another concern is
+that Leepa copies other bots' less sophisticated speech, hostility, punctuation,
+or repeated mannerisms. The owner's terms “osmosis” and “entropy transfer” were
+informal descriptions, not established technical diagnoses.
+
+The architecture should give the model useful information and workable tools,
+without turning every social judgment into hand-written Python classifications.
+Prompt text and trial-and-error remain important. Personality improvement is
+ongoing; adding a selector or tools does not establish that it is solved.
+
+The older physics-companion framing, six-month personal timetable, planned move
+to cloud hosting, Gemini/Groq master-switch description, “stateless forever”
+claims, and “project complete; no integrations planned” statements are obsolete.
+Physics calculations and graphs are possible uses, but this is a broader personal
+Discord bot. PDF summaries remain an older idea, not an implemented capability.
+
+
+RULES FOR FUTURE WORK
+
+- Work within explicit approval. A proposed plan is an order of work, not blanket
+  permission. Do not quietly change personality, flags, models, unrelated code,
+  or the agreed delivery method. Ask before departing from the approved scope.
+- Use plain language. The first formal plan, its “Phase 0”, approval gates, and
+  proposed collection of old-behavior examples were rejected. Do not recreate
+  that process. Code checks are different from requiring a behavioral baseline.
+- Preserve the owner's latest files. Never restore old persona text, deleted
+  N-shots, obsolete emojis, or missing flags from an earlier generated version.
+- Prompts.py is owner-maintained. Normally provide the exact additions or changes
+  and their location, rather than rewriting the entire file.
+- For other code files, the owner prefers complete replacement files. Downloads
+  and previews failed repeatedly, so full chat contents were used as a fallback.
+  Most recently the owner requested preview/download files first, with pasted
+  contents if necessary. Do not substitute an installer without approval.
+- Keep comments short and useful. No long essays inside application code.
+- Interpret examples as examples, not exhaustive lists of desired features or
+  forbidden behavior. Keep explanations understandable to a non-native speaker
+  who is learning deployment and programming as the project grows.
+- Maintain code copies on the desktop, GitHub, and VM. A change existing only on
+  the running VM is not the intended workflow. Secrets and runtime data have
+  their own storage/backup needs.
+
+
+1. WHY THE REVAMP STARTED
+
+Leepa had moved from Gemini 2.5 Flash / 3 Flash to DeepSeek V3 0324 without a full
+system-prompt rewrite. Gemini-era prompting had accumulated prohibitions and
+behavioral guardrails intended to overcome bland or hostile answers. The same
+prompt did not transfer cleanly to DeepSeek.
+
+The thinking_block had helped the Gemini version. Seed words seemed ineffective
+there, but visibly steered DeepSeek into irrelevant associations. The owner could
+see this in the logs. The goal became retaining the ability to experiment while
+making Leepa more present in the actual conversation.
+
+The original plan was too formal and ambiguous. “Regression set” was mistaken
+for classifying messages before the model saw them, and the owner explicitly
+rejected a new collection of examples of Leepa's old behavior. The replacement
+plan was a simple order of work. The earlier content-intent classifier was not to
+be reintroduced: Python would provide facts, and an LLM would interpret them.
+
+
+2. SWITCHES, PROMPT STRUCTURE, AND PRESERVATION
+
+The first approved changes covered independent controls for N-shot examples,
+thinking_block, seed words, emoji reactions, custom emojis, and temperature
+jitter. Prompt instructions, JSON expectations, parsing, and physical reactions
+needed to agree with those settings. Seed words depend on thinking_block.
+
+An early rewrite also split and changed the system prompt before that work had
+been approved. A subsequent attempted rollback removed approved phase-one
+changes too. Both were scope mistakes. The owner's explicit-approval rule grew
+out of these incidents; rollback must target the unwanted change without undoing
+already approved work.
+
+The prompt was then deliberately separated into maintainable fields, with
+assembly moved to prompt_builder.py. Static identity/personality, selected style,
+thinking/seed instructions, output format, examples, custom emojis, relationship
+blocks, current Discord data, history, and feature guidance could be maintained
+independently. The owner retained authorship of personality text.
+
+The owner repeatedly rewrote the prompt, added emojis, and removed N-shot
+examples. An old delivered prompts.py lost current material and the USE_SLOPPY
+flag, prompting corrected file requests. These incidents are reasons to treat
+the latest user-edited file as authoritative, not to reproduce old defaults.
+
+Later prompting research and a review of instructions outside prompts.py were
+requested. Prompt-builder anchors, schema instructions, tool notices, vision and
+summary prompts, and JSON repair instructions can all affect behavior. The owner
+identified “chaotic” surviving in an old anchor after removing it elsewhere.
+Do not claim all instructions live in prompts.py or reintroduce that old anchor.
+
+The latest explicitly preserved name guidance is:
+“Use each person's display_name, or a shorter version of it, when referring to
+them. Discord IDs are only stable identity markers; never use an ID as someone's
+name.” The owner's ordering of recent history, anchor, and current event was also
+retained in the subsequent builder update.
+
+
+3. RAW DISCORD CONTEXT AND SERVER NAMES
+
+discord_context.py was introduced to supply stable author IDs alongside display
+names, bot status, server/channel/thread or DM location, attachments, and reply
+information. The LLM should not call people by their Discord IDs.
+
+The actual referenced message can be fetched even after it leaves recent memory.
+Unavailable/deleted references are represented as unavailable, not guessed.
+The owner explicitly approved a fetched old Leepa message making the incoming
+reply count as QUOTED in the private trigger logic. Older messages need their own
+context; Leepa should not treat all of her past output as a current self-description.
+
+The incoming event was separated from prior history to avoid showing it twice in
+the same prompt. Reply references and actual Discord thread channels are distinct.
+The private DIRECT / QUOTED / AMBIENT trigger mechanism remained; it decides
+whether to call the model, not what a message means socially.
+
+
+4. BOT CATALOG AND RELATIONSHIPS
+
+OTHER_BOT_ID was replaced with RAKUN_ID. A bot registry was added so Rakun was not
+implicitly the only other bot. The catalog grew to Rakun, Sloppy, Buns, Warro, and
+Grinch, with IDs supplied in .env.
+
+Rakun received a conditional relationship prompt: he supplies the boke, and
+Leepa the tsukkomi. The owner rewrote the exact interpretation. The block should
+apply because Rakun's ID matches, not because any bot spoke or a name appeared in
+the text.
+
+Buns received an owner-written relationship/attraction block, subsequently wired
+into prompt assembly. Warro received background describing the abrasive Wario
+parody; the initial addition supplied identity context without a prescribed
+interaction style. Grinch's owner-added block describes his hostile Grinch parody
+and the desired response. The user reported adding GRINCH_ID and the registry
+entry manually; the builder supports the block. An older saved registry lacking
+Grinch is not evidence that the owner never added him.
+
+Sloppy is a creation service, not a chatbot. A separate classification prevents
+its job messages from triggering conversational replies while keeping them
+available as context.
+
+
+5. BOT CHAINS: WHAT WAS TRIED AND WHAT REPLACED IT
+
+The owner described two bots answering a human in parallel and then answering
+each other's branches, making the conversation noisy and hard to follow. A
+concurrent-response cancellation mechanism already existed, but depended on which
+bot answered first. Ambient probability had also been reduced substantially.
+
+The proposal to make at most one decision for an entire root interaction was
+rejected. If Leepa declined to answer a human, she should still be able to answer
+Rakun later. The owner also rejected forcing every exchange to length one.
+
+A weighted random maximum from one to four Leepa bot replies was approved and
+implemented. The draw was meant to favor one, with rarer longer exchanges, and
+act only as a Python ceiling; the LLM could still decide to stop earlier.
+
+A subsequent roughly twenty-message uninterrupted Leepa/Rakun exchange showed
+that the protection was not reliable. The owner challenged diagnoses involving
+human interruptions or a wrong Rakun ID: the messages were correctly threaded and
+no human intervened. This history does not establish one proven original counter
+bug; the counter design was ultimately replaced rather than documented as fixed.
+
+The owner learned that Rakun previously had its own 60-second pause after an
+exchange. That explained why split branches had seemed rare. Rakun's pause was
+removed during its creator's updates, so its protection could not be assumed.
+
+The approved replacement: after Leepa successfully replies to a chatbot, roll an
+80% chance of starting a 60-second pause for that bot in that channel. A 20%
+continuation remains possible, allowing rare longer conversations without a fixed
+chain counter. This applies to bot authors generally, not just RAKUN_ID. Human
+engagement is not subject to this bot pause. Real timing and intervening events
+mean it is not an exact mathematical hard cap.
+
+The separate first-bot-wins cancellation for pending ambient answers and the
+one-bot-turn-per-channel guard remain. The owner chose to retain existing ambient
+probability rather than redesign all branching behavior. The latest saved code
+uses 5% ambient probability and a 0.3 Rakun multiplier, giving 1.5% for Rakun.
+
+Sloppy outputs are now excluded as triggers even when Sloppy directly replies to
+a command Leepa sent. This addressed Leepa chatting to “Video queued” because it
+was a reply to her.
+
+
+6. SLOPPY INTEGRATION AND EDITED MESSAGES
+
+Message IDs were added to STM so edits can update the original entry. Raw edit
+handling retrieves the edited message, including newly attached output. Supported
+images can be described; video/audio attachments remain metadata. This does not
+give Leepa the ability to hear music or watch a finished video.
+
+The owner had already confirmed that Sloppy accepts bot commands and has its own
+rate limits. The old plan's requirement to reconfirm this and approve hypothetical
+job costs was explicitly rejected and must not remain an unfinished gate.
+
+The key invocation fact was clarified: Sloppy acts only when its command is at
+the literal beginning of a message. Leepa has one outgoing reply field, so an
+introduction followed by a command fails. A proposed separate response-plus-sloppy
+JSON design was rejected. So were regex-based command extraction, automatic
+format correction, and rigid user-side duration parsing for !Lh3.
+
+The approved approach uses ordinary prompt instructions: a dedicated command
+requires response to start with the exact Sloppy prefix. Commands in these prompt
+instructions must not be wrapped in backticks, which can be copied literally.
+Leepa may also choose to invoke Sloppy during normal conversation. This is not a
+system where Sloppy can only be reached through !L commands.
+
+The catalog began with !Lh3 / !h3, !Lyue / !yue, and !Lkrea / !krea. !h3 accepts
+1–15 seconds, default 5; Leepa decides the actual prompt/duration. Yue has song
+instructions on its first line and lyrics after a required newline, with optional
+section tags. Timestamps were documented as useful for H3 and Yue. Krea takes an
+image prompt and can receive aspect-ratio instructions.
+
+The creator later added Qwen and Hanime. !Lqwen was added, but !Lqwedit was not,
+because editing needs an uploaded base image. Qwen's reference-image support is
+not an attachment capability Leepa possesses. !Lhanime invokes the anime-style
+video model using the same broad input form as H3. Kroma and Wulv were also added
+to the owner's later command catalog and help descriptions. Source-audio commands
+!ycov, !yext, and !yflow remain excluded. The owner later reported no further
+Sloppy update needing implementation.
+
+Sloppy prompt text and command documentation remain easy to edit in prompts.py;
+no separate Sloppy prompt file was introduced.
+
+
+7. PROMPT SELECTION, MODEL ROUTING, AND SAMPLING
+
+The owner proposed a second LLM choosing a dynamic prompt addition from a catalog
+after a static prompt. A numeric mood meter with manually chosen thresholds was
+discarded. “Response director” or “scene reader” was not the desired framing: the
+component is a prompt selector/assembler. It selects from allowed assemblies,
+not arbitrary instructions or self-written system prompts.
+
+DeepSeek V3 0324 was selected for this component. It receives STM and the current
+event; the main model still writes the final response. internal_mood remains
+available in Leepa's prior state in STM, but no persistent numeric mood system was
+implemented around it.
+
+The owner requested a model-routing audit after stale-model/deprecation concerns,
+including a quoted Gemini 2.5 Flash redirect announcement. A newer DeepSeek route
+was introduced, with SiliconFlow preferred and OpenRouter also supported. After
+an incoherent multilingual generation, temperature scaling/caps were reduced.
+The temperature explanation was plausible and consistent with earlier provider
+switch problems; this is not a controlled proof that temperature was the only
+cause. Token ceilings and JSON recovery help contain malformed output, but do not
+make arbitrary high-temperature output reliable.
+
+The owner later reverted the primary conversation model to DeepSeek V3 and
+approved keeping newer DeepSeek fallback routes. The latest saved active chain
+is V3 0324 on OpenRouter, then the configured V4.1 Flash profile on SiliconFlow,
+then its OpenRouter profile. A dedicated V3 JSON formatter remains. Generic
+provider code and some unused profiles remain; they are not active fallback
+layers merely because they exist in the module.
+
+Vision was updated separately to the configured gemini-3.5-flash-lite primary and
+OpenRouter Llama 4 Scout fallback. The old Gemini 2.5 Flash / Llama 3.2 11B vision
+choices were superseded. These are the project's recorded routing choices; this
+documentation update does not certify current provider catalogs or the precise
+deprecation dates quoted earlier.
+
+The Python tests exposed a selector problem: it treated frustrated requests to
+complete real work as playful because of their wording. Distinguishing “serious”
+from “grounded” without clear definitions was also unhelpful. The approved change
+gave the selector a clearer catalog and a JSON task/tool decision. It reads the
+conversation at a broader level, resolves references, and can infer that web data
+needs Python analysis or a graph even when those words are not explicit.
+
+True means a tool action is required; false means optional, not forbidden. The
+main model performs the calls. Required image output is tracked, and explicit
+notebook tasks can require their completing operation. Spontaneous notebook use
+remains available. Premature “I'll do it” answers can be held back for a bounded
+correction; exhausted/failed work must not be described as completed.
+
+When the selector itself sometimes produced no usable result, it received its
+own fallback chain rather than sharing all main-response settings. The supplied
+implementation distinguishes configuration, transport, empty-response, JSON,
+schema, truncation, and provider failures; supports structured output where the
+route can use it; retries/corrects within a time budget; and falls back to a default
+selection without declaring that tools should be skipped. It preserves the main
+response route list independently.
+
+
+8. LOGS, EMOJIS, HELP, AND NOTE GUIDANCE
+
+After a restart, journalctl showed service/gateway messages but no incoming or
+outgoing application logs. The supplied diagnostics showed stdout routed to the
+journal and LOG_LEVEL=WARNING. The owner adjusted the setup and later confirmed
+logging/log polish worked. Sampling logs expose the model/profile and actual
+temperature; selector logs expose its choice and reason; tools have their own
+labels. -o cat displays the application's formatting without journal prefixes.
+
+Emoji repetition became a recurring problem, including a long run of :stardust:
+and later a narrow set such as take-the-L, popcorn, and glasses. The owner wanted
+the no-consecutive-repeat instruction restored, not a hard Python prohibition.
+Optional emoji descriptions were added, keyed to exact emoji identifiers; emojis
+without descriptions remain valid. Examples included deceptive names, ironic
+i_am_very_smart use, innuendo-related MY_HOLE, and the racoon1/racoon2/racoon3 set.
+The descriptions and inventory belong to the owner; there is no automatic rule
+that all 150+ emojis need annotation or that multi-part sets fit a single reaction.
+
+!Leepa help was introduced through the command system. It initially depended on
+USE_SLOPPY and mostly listed creation commands. It was later decoupled from that
+flag and assembled dynamically from enabled public features in the current
+server, including Python, graphs, and web search. Sloppy is omitted where absent.
+Private notebook operations were deliberately left out of public help.
+
+The owner asked to remove the help prompt's fixed 1,800-character instruction and
+allow more useful long answers. The help wording was shortened to “be brief.”
+This did not implement unlimited Discord output: the current saved API ceiling
+and single-message send path remain separate limits, recorded in the README.
+
+A dedicated PROMPT_NOTEBOOK field was added to explain why notes exist, how to
+find/update them, and how Leepa can use them organically. It is included only when
+the notebook is enabled and available. The idea of automatic notebook review or
+writing every 50 messages was discussed, not implemented.
+
+
+9. REPLACING THE OLD LTM WITH A PERSISTENT NOTEBOOK
+
+The older LTM used one JSON store per server, embedding cosine similarity, an
+exponential decay scheme with dynamic half-life, relevance hits, and promotion to
+core memories. A message could retrieve at most the highest-scoring qualifying
+memory. Generic entries could dominate retrieval, gain disproportionate counts,
+and hide other entries. Long lifetimes compounded stale context.
+
+Removing that LTM had improved behavior, but the owner explicitly reconsidered
+whether it had been the sole cause of earlier problems. It must not be described
+as proven inherently toxic or as the sole explanation for hostility.
+
+The owner then chose a new direction: files Leepa can discover, read, create,
+modify, and remove on purpose. Reusing the old LTM with age-based ranking or
+archiving was explicitly rejected. No embeddings, time decay, hit counts, core
+memory promotion, or old JSON migration were approved for the new notebook.
+memory_graveyard / lore_vector_store remain historical material, not the active
+memory architecture.
+
+The owner also recalled logging an entry every 50 messages in the deprecated LTM.
+That older periodic behavior was not carried into the new voluntary notebook.
+
+Server awareness was separated upstream from notebook use. Sloppy availability
+is a deterministic server fact, not something the LLM must remember to infer
+from notes. This also prevents the testing server's help from offering absent
+Sloppy features.
+
+The owner created Leepa_sb on the existing VM. It is a normal directory, not a new
+SSH connection, VM, cloud project, or API account. It can be empty before actual
+tool writes. Scoped subdirectories, file listing/search, versioned writes,
+revision checks, and recovery make filenames discoverable without hardcoding
+each note into application code.
+
+During deployment, a required configuration module was placed outside core and
+caused a systemd restart loop. The traceback named core.server_config; the user
+referred to the misplaced file as system_config. Moving the intended module to
+the expected package location resolved the startup failure.
+
+Leepa then narrated file creation without using a tool. An environment setting
+showed USE_NOTEBOOK=true in .env but False in the running configuration. The owner
+asked that feature booleans live with the existing switches in prompts.py, while
+credentials, paths, and IDs remain deployment values. Notebook/server scopes and
+file permissions also matter; a flag alone is not sufficient.
+
+After these fixes, the owner confirmed that Leepa created a file and modified it.
+That established real notebook use. It did not prove every failure/recovery case
+or long-term quality of the notes.
+
+A later #trash-chat failure followed an ambient-turn cancellation when Rakun
+replied first. Notebook orientation raised “This turn was cancelled,” and a broad
+fallback treated this as notebook unavailability instead of ending the turn.
+Cancellation propagation was repaired so a cancelled turn is not continued as a
+normal tool-less answer. The owner confirmed the subsequent fixes worked.
+
+
+10. WEB ACCESS
+
+Web access was intentionally tackled before code execution so failures could be
+understood separately. The owner rejected an approved-domain-only first version
+and preferred a provider-hosted search tool over another separately integrated
+search API/key. General web search was enabled without a domain allowlist.
+
+The main answering model calls OpenRouter's hosted web-search tool and receives
+results in the existing tool loop. Exa is the configured search engine behind that
+provider tool. There is no separate research LLM in the current implementation;
+that remains a possible later design if quality requires it. The selector can
+require search, but does not execute the search.
+
+Search budgets, bounded result excerpts, source URLs, usage accounting, fallback
+compatibility, and cancellation were included. This is search/excerpt access,
+not unrestricted browser automation or arbitrary network access for Python.
+Search data is untrusted, and private chat/notes/secrets must not be sent as public
+queries. Leepa may separately save a useful finding in her notebook.
+
+The owner confirmed real news searches, summaries, and source links, with good
+latency. Long explanatory comments about token caps and shared-pool retries were
+requested removed from api_handler during this work; future edits should not
+reintroduce them as essays in code.
+
+
+11. LOCAL EXECUTION WITH PISTON
+
+The owner explored coding beyond Python, using ROOT, C, Rust, TypeScript, and
+others as examples of possibilities. Those examples were not an exhaustive
+language requirement. Piston, Judge0, hosted execution, and separate isolation
+options were discussed. The owner's chosen first version was self-hosted Piston
+on the same existing VM, with only its installed Python runtime exposed to Leepa.
+No home server, Raspberry Pi, or additional VM was selected.
+
+An API is still used: it is Piston's local HTTP service, not necessarily an
+external SaaS. A fresh VM per job and a separate compiler folder for each request
+are not part of the architecture. The installation/runtime management and job
+isolation are provided by Piston and its deployment, while Leepa's code adapts
+requests and collects supported results.
+
+The owner installed Docker/Compose, started Piston in Leepa_exec, and installed
+Python through Piston's package manager. Runtime discovery first returned [],
+then Python 3.12.0. A real execution printed the available packages. The original
+inventory included numpy 1.26.1, pandas 2.1.2, scipy 1.11.3, sympy 1.12, mpmath 1.3.0,
+pip 23.2.1, PyNaCl, Whoosh, base58, bcrypt, cffi, cryptography, passlib, pycparser,
+pycryptodome, python-dateutil, pytz, six, tzdata, and xxhash. It did not include
+Matplotlib or Pillow. Installed libraries must be measured in the execution
+runtime, not inferred from a web list or the bot's own virtualenv.
+
+The VM reported about 955 MiB RAM and no swap. With Piston stopped, available RAM
+was around 388 MiB; an early idle measurement showed Piston around 46 MiB and
+365 MiB available. After imposing a 256 MiB container cap and running a PNG sanity
+check, Piston was around 66 MiB and the host had 361 MiB available. These supported
+small sequential tests, not unlimited concurrency or heavy plotting workloads.
+
+The pre-integration PNG test generated a valid 320 x 160 sine plot using standard
+Python, struct, and zlib, retrieved 1,165 bytes intact, and reported roughly
+21.8 MB of job memory. This verified a possible collection path before exposing
+the tool to the LLM.
+
+The integrated run_python tool sends a job wrapper and script to Piston. The
+wrapper captures text and can encode a specifically requested PNG; the host then
+decodes and validates it. It is not enough to print a filename, and a file with
+a .png extension is not automatically a valid image. Outputs are temporary unless
+their conclusions are deliberately written into notes. Only text and a validated
+PNG graph are authorized for this feature, not arbitrary generated attachments.
+
+The owner confirmed actual Python tool execution for the sum of squares from
+1 through 102, producing 358955. The initial graph attempts failed: one wrote a
+length and compressed pixel bytes without a real PNG structure, another saved
+graph.dat instead of a supported image, and another answer merely promised to
+work without calling the tool. The wrapper executing successfully was distinct
+from the graph export succeeding. Leepa's final answer also failed to recover
+productively from the missing image.
+
+The approved response was to stop teaching a full PNG-writing tutorial in the
+persona, prepare the Matplotlib/Pillow plotting path and a runtime sanity check,
+improve image-error reporting, and make required tool/graph work explicit through
+the selector. The wrapper configures headless plotting and limits numeric-library
+threads. The owner later reported the combined changes “kind of” working, with
+selector reliability as the remaining immediate issue. Do not invent a separate
+live transcript proving every graph scenario or exact final installed version.
+
+Execution has limits on time, CPU, memory, output, paths, graph dimensions, and
+concurrency. The supplied Piston container is privileged and shares the VM; this
+is not equivalent to a separate security boundary. The owner accepted the same-VM
+tradeoff. Curiosity about future self-modification was not implemented as a
+permission to edit the running bot or expose a general host shell.
+
+
+12. REACTION FEEDBACK, HISTORY SEARCH, AND PINS
+
+The owner wanted Leepa to see how people react to her, including server emoji
+usage such as dogekek. Previously she could send reactions but did not receive
+this feedback in her prompt. The approved addition records raw add/remove/clear
+events for Leepa's own messages, including old uncached targets. It retains names,
+emoji identity, original-message context, location, and observed event time.
+
+Feedback is kept in a bounded section alongside STM. It does not use ordinary
+message slots, call an LLM, trigger a public reply, or score reactions as approval
+or disapproval. Repeated activity is coalesced; removals/clears replace stale
+observations appropriately. Her own reactions are ignored. This is contextual
+feedback, not permanent model training or a complete reaction roster. Human-to-
+human reactions can be inspected through retrieved message data rather than
+being automatically collected as feedback on Leepa.
+
+Five tools were added: list_discord_channels, search_discord_messages,
+read_discord_history, read_discord_message, and read_discord_pins. Discord's native
+search is used instead of scraping a whole channel into a local index. Leepa can
+read around a result, follow pagination, and cite original message links. Search
+results omit reactions; a fetched message can supply current reaction data.
+Unreadable messages, permission errors, indexing delays, and empty searches are
+different outcomes. Historical retrieval does not replay old messages as new
+chat events or automatically perform vision on every historical attachment.
+
+Tools are independent of USE_NOTEBOOK, scoped to the current server, with the
+current channel/thread available by default and additional channels configured
+explicitly in DISCORD_HISTORY_CHANNELS. Actual Discord read permissions also
+apply. These calls run in the Discord bot process, not in Piston, so generated
+Python is not given the bot token. Two new prompts.py switches control reaction
+feedback and Discord lookup separately. The selector gained discord_history as
+a required-tool field; a successful channel listing alone does not satisfy it.
+
+The supplied implementation passed ten offline feature checks plus existing
+selector-route checks. Tests covered old reactions, remove/clear handling,
+bounded memory, permissions/server scope, names, pagination, indexing errors,
+feature disabling, required-tool enforcement, and failure not counting as success.
+The owner then reported the installed files working. This does not substitute for
+an exhaustive live Discord test of every permission/thread combination.
+
+The update was initially delivered with an installer instead of the requested
+complete files in chat. That was an unapproved delivery change, subsequently
+acknowledged. The owner ran it on the VM, then requested full replacement files
+for desktop/GitHub synchronization. Eight complete source files and a source-only
+archive were supplied. The installer is not a runtime dependency; the owner plans
+to remove it. Deleting it from GitHub's current tree is possible even though an
+older commit can still retain it. No installer-first workflow is approved for
+future updates.
+
+
+13. DEPLOYMENT INCIDENTS AND PRACTICAL DETAILS
+
+Code is hosted on a Google VM under a systemd service and updated through GitHub.
+The owner works over SSH. A Git username/password prompt is a Git remote
+authentication issue, not evidence that a new bot instance or VM is needed; this
+record does not claim a particular authentication migration was completed.
+
+Running “cd ~/LeepaBot” before git commands changes to that directory even if the
+shell started in Leepa_sb. The owner's concern about updating/restarting the
+wrong instance in that situation was resolved. No duplicate instance was found
+merely because the shell had previously been inside the notebook directory.
+
+The source tree, notebook, and Piston installation have different roles. A Git
+checkout alone does not reproduce .env, systemd settings, the saved notebook, or
+the installed Python packages. Live-only changes must be brought back into the
+owner's source copies deliberately; a generated replacement file cannot claim
+to contain unobserved VM edits.
+
+
+14. WHAT IS STILL OPEN
+
+Step eight updates this documentation; it does not authorize code fixes. The
+following are still separate matters:
+
+- Behavior tuning by the owner, including relevance, roleplay drift, imitation of
+  other bots, punctuation, emoji variety, and useful voluntary notebook use.
+- Arrival-order preservation while image analysis is running.
+- Restoring/retaining an extracted STM chunk when background summarization fails.
+- Slow-response lock timing outside the tool-aware path.
+- Long replies: removal of help's character-count instruction is not a general
+  multi-message output implementation or removal of the output-token cap.
+- Explicit public-help coverage for the newly added Discord-history tools.
+- Checking actual current provider availability and installed packages before
+  changing models or promising a library. This documentation task did not change
+  routes, packages, prompts, or enabled flags.
+- Broader page fetching/browser access, other execution languages, on-demand
+  packages, self-modification, scheduled notebook review, and a separate research
+  model remain ideas, not approved active features.
+- PDF ingestion and automated physics-document summaries remain historical
+  possibilities, not a completed milestone.
+
+The original old LTM is not waiting to be switched back on. Step seven became a
+new persistent-notebook/tool architecture, followed by web, Python, and Discord
+retrieval. Future work should start from this state and the owner's current files.

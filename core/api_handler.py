@@ -471,7 +471,7 @@ def parse_prompt_assembler_payload(content: str) -> dict:
     return result
 
 
-def handle_error_response(error: dict) -> dict:
+def handle_error_response(error: dict, *, provider: str | None = None, http_status: int | None = None) -> dict:
     """Parses standard OpenAI format errors to safely fail open on rate limits.
     The returned internal_mood (rate_limit / daily_limit / error) intentionally
     flows into Leepa's STM so she is aware of her own outages."""
@@ -497,7 +497,19 @@ def handle_error_response(error: dict) -> dict:
         wait_str = f" — retry in {wait_time:.1f}s" if wait_time else ""
         logger.warning(f"Rate limited ({finish_reason}){wait_str}: {error_str}")
 
-    return {"response": "", "reaction_emoji": "", "internal_mood": finish_reason, "_failed": True}
+    result = {"response": "", "reaction_emoji": "", "internal_mood": finish_reason, "_failed": True}
+    metadata = error.get("metadata")
+    # This routing rejection happens before a model can execute any tools.
+    if (
+        provider == "openrouter" and http_status == 404
+        and str(error.get("code")) == "404"
+        and str(error.get("message", "")).startswith("No endpoints found")
+        and isinstance(metadata, dict)
+        and metadata.get("failed_routing_step") == "Filter by Tool Compatibility"
+        and not metadata.get("provider_name")
+    ):
+        result["_request_rejected"] = True
+    return result
 
 
 # ---------------------------------------------------------
@@ -569,7 +581,7 @@ async def call_llm(
     profile = PROFILES.get(profile_key)
     if not profile:
         logger.error(f"Profile '{profile_key}' does not exist.")
-        return {"response": "", "reaction_emoji": "", "internal_mood": "error", "_failed": True}
+        return {"response": "", "reaction_emoji": "", "internal_mood": "error", "_failed": True, "_request_rejected": True}
 
     if thermal_scalar is None:
         thermal_scalar = (
@@ -585,7 +597,7 @@ async def call_llm(
     provider = PROVIDERS.get(provider_key)
     if not provider or not provider.get("key"):
         logger.error(f"Provider '{provider_key}' is not configured or missing API key.")
-        return {"response": "", "reaction_emoji": "", "internal_mood": "error", "_failed": True}
+        return {"response": "", "reaction_emoji": "", "internal_mood": "error", "_failed": True, "_request_rejected": True}
 
     # Apply this profile's scale and optional temperature cap.
     final_temp = round(thermal_scalar * capabilities.get("temp_scalar", 1.0), 2)
@@ -705,7 +717,7 @@ async def call_llm(
                 error = dict(error) if isinstance(error, dict) else {"message": str(error)}
                 if response.status_code == 429:
                     error["code"] = 429
-                return handle_error_response(error)
+                return handle_error_response(error, provider=provider_key, http_status=response.status_code)
 
             # Some providers (SiliconFlow among them) report errors as a
             # TOP-LEVEL {"code": ..., "message": ...} object instead of
@@ -963,6 +975,12 @@ async def call_llm_with_fallback(system_prompt: str, user_prompt: str, thermal_s
                 if session.cancelled() or session.requests >= MAX_MODEL_REQUESTS:
                     logger.info("[TOOLS] Turn ended or model request limit reached.")
                     return {"response": "", "reaction_emoji": "", "internal_mood": "tool_limit", "_failed": True}
+                if session.needs_search_route() and (
+                    session.searches_remaining <= 0 or final_only
+                    or session.requests >= MAX_MODEL_REQUESTS - 1
+                ):
+                    logger.warning("[WEB] Required search cannot run within this turn's remaining limits.")
+                    return {"response": "", "reaction_emoji": "", "internal_mood": "tool_limit", "_failed": True}
                 options, allowance = session.prepare_request(
                     PROFILES[profile_key]["provider"], request_options["messages"],
                     final_only or session.requests >= MAX_MODEL_REQUESTS - 1,
@@ -974,6 +992,9 @@ async def call_llm_with_fallback(system_prompt: str, user_prompt: str, thermal_s
             if cancelled is not None and cancelled():
                 return _cancelled_response()
             if not result.get("_failed"):
+                return result
+            if session is not None and session.needs_search_route() and session.searches_remaining <= 0:
+                logger.warning("[WEB] Required search is unconfirmed; ending this turn without another model call.")
                 return result
 
             mood = result.get("internal_mood")
@@ -992,7 +1013,7 @@ async def call_llm_with_fallback(system_prompt: str, user_prompt: str, thermal_s
         if i + 1 < len(PROFILE_CHAIN):
             logger.warning(
                 f"Profile '{profile_key}' failed ({result.get('internal_mood')}). "
-                f"Falling back to '{PROFILE_CHAIN[i + 1]}'."
+                "Trying remaining routes."
             )
         else:
             logger.error(f"All profiles in PROFILE_CHAIN failed. Last failure: {result.get('internal_mood')}")

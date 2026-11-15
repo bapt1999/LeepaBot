@@ -153,7 +153,7 @@ class ToolSession:
         return actionable
 
     def needs_search_route(self) -> bool:
-        return "web_search" in self.actionable_requirements()
+        return "web_search" in self.missing_requirements()
 
     def failure_response(self, detail: str = "") -> dict:
         missing = self.missing_requirements()
@@ -245,15 +245,25 @@ class ToolSession:
             status += "\nTASK CONTEXT: " + json.dumps(self.selection["task"], ensure_ascii=False)
         request_messages = [dict(message) for message in messages]
         request_messages[0]["content"] += "\n\n" + status
+        # OpenRouter may reject forced choices; our completion checks still apply.
+        force_tool = bool(actionable) and provider != "openrouter"
         return {
             "messages": request_messages,
             "tool_definitions": definitions or None,
-            "tool_choice": ("required" if actionable else "auto") if definitions else "none",
+            "tool_choice": ("required" if force_tool else "auto") if definitions else "none",
             "raw_response": True,
         }, allowance
 
     def record_search_usage(self, allowance: int, result: dict, profile: str) -> None:
         if not allowance:
+            return
+        if result.get("_failed") and result.get("_request_rejected"):
+            self.searches_remaining += allowance
+            result["_web_searches"] = 0
+            logger.info(
+                "[WEB] %s request rejected before execution; searches=0 remaining=%s",
+                profile, self.searches_remaining,
+            )
             return
         usage = result.get("_usage")
         message = result.get("_message")
