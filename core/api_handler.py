@@ -37,9 +37,19 @@ PROFILE_CHAIN = [
 JSON_FORMATTER_PROFILE = "json_formatter"
 FORMATTER_TEMPERATURE = 0.05
 
-# Selects response style and required work, without executing tools.
-PROMPT_ASSEMBLER_PROFILE = "prompt_assembler"
+# The selector has its own routes and request limits.
+PROMPT_ASSEMBLER_CHAIN = [
+    "prompt_assembler",
+    "prompt_assembler_v41_siliconflow",
+    "prompt_assembler_v41_openrouter",
+]
 PROMPT_ASSEMBLER_TEMPERATURE = 0.10
+PROMPT_ASSEMBLER_MAX_TOKENS = 800
+PROMPT_ASSEMBLER_TOTAL_SECONDS = 30.0
+PROMPT_ASSEMBLER_ROUTE_SECONDS = 10.0
+PROMPT_ASSEMBLER_REQUEST_SECONDS = 8.0
+PROMPT_ASSEMBLER_ATTEMPTS = 2
+PROMPT_ASSEMBLER_RETRY_DELAY = 0.5
 
 PROFILES = {
     "deepseek_v41_siliconflow": {
@@ -98,13 +108,35 @@ PROFILES = {
         "provider": "openrouter",
         "model": "deepseek/deepseek-chat-v3-0324",
         "capabilities": {"native_thinking": False, "temp_scalar": 1.0},
-        "extra_payload": {
-            "max_tokens": 500,
-        },
+        "structured_outputs": True,
         "omit_payload_fields": ("frequency_penalty", "presence_penalty"),
         "provider_routing": {
+            "order": ["siliconflow"],
             "allow_fallbacks": True,
             "require_parameters": True,
+            "ignore": ["novita"],
+        },
+    },
+    "prompt_assembler_v41_siliconflow": {
+        "provider": "siliconflow",
+        "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "capabilities": {"native_thinking": False, "temp_scalar": 1.0},
+        "structured_outputs": False,
+        "extra_payload": {"enable_thinking": False, "top_p": 0.95},
+        "omit_payload_fields": ("frequency_penalty", "presence_penalty"),
+    },
+    "prompt_assembler_v41_openrouter": {
+        "provider": "openrouter",
+        "model": "deepseek/deepseek-v4.1-flash",
+        "capabilities": {"native_thinking": False, "temp_scalar": 1.0},
+        "structured_outputs": True,
+        "extra_payload": {"reasoning": {"enabled": False}, "top_p": 0.95},
+        "omit_payload_fields": ("frequency_penalty", "presence_penalty"),
+        "provider_routing": {
+            "order": ["siliconflow", "crusoe"],
+            "allow_fallbacks": True,
+            "require_parameters": True,
+            "ignore": ["novita"],
         },
     },
     "deepseek_v4_flash": {
@@ -344,32 +376,99 @@ def parse_json_payload(content: str) -> dict:
     return _normalize_fields(parse_json_object(content))
 
 
+class PromptSelectionError(ValueError):
+    def __init__(self, kind: str, detail: str, *, retryable: bool = False,
+                 correctable: bool = False, content: str = "",
+                 status: int | None = None, finish: str | None = None):
+        super().__init__(detail)
+        self.kind = kind
+        self.retryable = retryable
+        self.correctable = correctable
+        self.content = content
+        self.status = status
+        self.finish = finish
+
+
+def prompt_selection_schema() -> dict:
+    properties = {
+        "assembly_id": {"type": "string", "enum": list(prompt_assembly_ids())},
+        "required_tools": {
+            "type": "object",
+            "properties": {name: {"type": "boolean"} for name in ("python", "web_search", "notebook")},
+            "required": ["python", "web_search", "notebook"],
+            "additionalProperties": False,
+        },
+        "required_output": {"type": ["string", "null"], "enum": ["png", None]},
+        "notebook_action": {"type": ["string", "null"], "enum": [*SPECS, None]},
+        "task": {"type": "string"},
+        "reason": {"type": "string"},
+    }
+    return {
+        "type": "object", "properties": properties,
+        "required": list(properties), "additionalProperties": False,
+    }
+
+
 def parse_prompt_assembler_payload(content: str) -> dict:
-    data = parse_json_object(content)
-    keys = {"assembly_id", "required_tools", "required_output", "notebook_action", "task", "reason"}
-    if set(data) != keys:
-        raise ValueError("Invalid selector fields.")
-    if data["assembly_id"] not in prompt_assembly_ids():
-        raise ValueError("Unknown prompt assembly.")
+    def invalid(detail: str) -> PromptSelectionError:
+        return PromptSelectionError("invalid_selection", detail, correctable=True, content=content)
+
+    def unique_fields(pairs: list) -> dict:
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise invalid(f"Duplicate JSON field: {key}.")
+            result[key] = value
+        return result
+
+    if not isinstance(content, str) or not content.strip():
+        raise PromptSelectionError("empty_response", "The selector returned no text.", correctable=True)
+    raw = content.strip()
+    lines = raw.splitlines()
+    if len(lines) >= 3 and lines[0].strip().lower() in ("```", "```json") and lines[-1].strip() == "```":
+        raw = "\n".join(lines[1:-1])
+    try:
+        data = json.loads(raw, object_pairs_hook=unique_fields)
+    except json.JSONDecodeError as error:
+        raise PromptSelectionError("invalid_json", str(error), correctable=True, content=content) from error
+    if not isinstance(data, dict):
+        raise invalid("The selection must be a JSON object.")
+
+    fields = ("assembly_id", "required_tools", "required_output", "notebook_action")
+    missing = set(fields) - data.keys()
+    if missing:
+        raise invalid(f"Missing selector fields: {', '.join(sorted(missing))}.")
+    if not isinstance(data["assembly_id"], str) or data["assembly_id"] not in prompt_assembly_ids():
+        raise invalid(f"assembly_id must be one of {prompt_assembly_ids()}.")
     required = data["required_tools"]
-    if not isinstance(required, dict) or set(required) != {"python", "web_search", "notebook"}:
-        raise ValueError("Invalid required_tools fields.")
-    if any(type(value) is not bool for value in required.values()):
-        raise ValueError("Tool requirements must be JSON booleans.")
+    tool_names = ("python", "web_search", "notebook")
+    if not isinstance(required, dict) or any(name not in required for name in tool_names):
+        raise invalid("required_tools must contain python, web_search, and notebook.")
+    if any(type(required[name]) is not bool for name in tool_names):
+        raise invalid("Tool requirements must be JSON booleans, not strings or numbers.")
     if data["required_output"] not in (None, "png"):
-        raise ValueError("required_output must be null or png.")
+        raise invalid("required_output must be null or png.")
     action = data["notebook_action"]
     if required["notebook"]:
         if not isinstance(action, str) or action not in SPECS:
-            raise ValueError("Choose an actual notebook operation.")
+            raise invalid(f"notebook_action must name an operation: {', '.join(SPECS)}.")
     elif action is not None:
-        raise ValueError("Optional notebook use must have notebook_action null.")
+        raise invalid("Optional notebook use must have notebook_action null.")
+
+    result = {key: data[key] for key in fields}
+    result["required_tools"] = {name: required[name] for name in tool_names}
     for key, limit in (("task", 400), ("reason", 300)):
-        if not isinstance(data[key], str) or len(data[key]) > limit:
-            raise ValueError(f"Invalid selector {key}.")
-    if data["required_output"] == "png":
-        required["python"] = True
-    return data
+        value = data.get(key, "")
+        if not isinstance(value, str):
+            raise invalid(f"{key} must be a string.")
+        if len(value) > limit:
+            logger.info("[PROMPT ASSEMBLER] Shortened %s to %s characters.", key, limit)
+        result[key] = value[:limit]
+    if set(data) - set(fields) - {"task", "reason"} or set(required) - set(tool_names):
+        logger.info("[PROMPT ASSEMBLER] Ignored extra selector fields.")
+    if result["required_output"] == "png":
+        result["required_tools"]["python"] = True
+    return result
 
 
 def handle_error_response(error: dict) -> dict:
@@ -646,40 +745,192 @@ async def call_llm(
             return {"response": "", "reaction_emoji": "", "internal_mood": "unknown_error", "_failed": True}
 
 
+async def _request_prompt_selection(profile_key: str, messages: list[dict], use_schema: bool) -> dict:
+    profile = PROFILES.get(profile_key)
+    if profile is None:
+        raise PromptSelectionError("configuration", f"Unknown selector profile: {profile_key}.")
+    provider_name = profile["provider"]
+    provider = PROVIDERS.get(provider_name)
+    if not provider or not provider.get("key"):
+        raise PromptSelectionError("configuration", f"Missing API key for {provider_name}.")
+    if provider_name == "gemini":
+        raise PromptSelectionError("configuration", "Selector routes must use a chat/completions endpoint.")
+
+    payload = {
+        "model": profile["model"], "messages": messages,
+        **profile.get("extra_payload", {}),
+        "temperature": PROMPT_ASSEMBLER_TEMPERATURE,
+        "max_tokens": PROMPT_ASSEMBLER_MAX_TOKENS,
+        "response_format": ({
+            "type": "json_schema",
+            "json_schema": {"name": "leepa_selection", "strict": True, "schema": prompt_selection_schema()},
+        } if use_schema else {"type": "json_object"}),
+    }
+    for field in profile.get("omit_payload_fields", ()):
+        payload.pop(field, None)
+    headers = {"Authorization": f"Bearer {provider['key']}", "Content-Type": "application/json"}
+    if provider_name == "openrouter":
+        headers.update({"HTTP-Referer": "https://github.com/physics_bot", "X-Title": "LeepaBot"})
+        payload["provider"] = dict(profile.get("provider_routing", {}), require_parameters=True)
+
+    logger.info("[SAMPLING] %s → %s | temp=%s", profile_key, profile["model"], PROMPT_ASSEMBLER_TEMPERATURE)
+    client = await get_http_client()
+    try:
+        response = await client.post(f"{provider['url']}/chat/completions", headers=headers, json=payload)
+    except httpx.TimeoutException as error:
+        raise PromptSelectionError("timeout", str(error) or "Provider timed out.", retryable=True) from error
+    except httpx.RequestError as error:
+        raise PromptSelectionError("network", str(error), retryable=True) from error
+
+    status = response.status_code
+    try:
+        body = response.json()
+    except ValueError as error:
+        raise PromptSelectionError(
+            "http" if status >= 400 else "invalid_api_response",
+            response.text[:400] or "Provider returned an empty HTTP body.",
+            status=status, retryable=status < 400 or status in (408, 425, 429) or status >= 500,
+        ) from error
+    api_error = body.get("error") if isinstance(body, dict) else None
+    if status >= 400 or api_error is not None:
+        detail = json.dumps(api_error if api_error is not None else body, ensure_ascii=False)[:1400]
+        code = api_error.get("code") if isinstance(api_error, dict) else None
+        raise PromptSelectionError(
+            "http", detail, status=status,
+            retryable=status in (408, 425, 429) or status >= 500 or str(code) in {"408", "429", "500", "502", "503", "504"},
+        )
+    choices = body.get("choices") if isinstance(body, dict) else None
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        raise PromptSelectionError(
+            "invalid_api_response", "Provider returned no usable choices: " + json.dumps(body, ensure_ascii=False)[:400],
+            status=status, retryable=True,
+        )
+    choice = choices[0]
+    finish = choice.get("finish_reason")
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        raise PromptSelectionError("invalid_api_response", "Provider returned no message object.", retryable=True, status=status, finish=finish)
+    content = message.get("content")
+    content = content if isinstance(content, str) else ""
+    if finish in ("length", "max_tokens"):
+        raise PromptSelectionError("truncated", "Selection was cut off; return a shorter, complete JSON object.", correctable=True, content=content, status=status, finish=finish)
+    if finish == "content_filter" or message.get("refusal"):
+        raise PromptSelectionError("filtered", "Provider did not return a selection.", status=status, finish=finish)
+    if finish == "error":
+        raise PromptSelectionError("provider_error", "Provider ended generation with an error.", retryable=True, status=status, finish=finish)
+    if message.get("tool_calls") or finish == "tool_calls":
+        raise PromptSelectionError("unexpected_tools", "Return a selection, not tool calls.", correctable=True, status=status, finish=finish)
+    try:
+        selection = parse_prompt_assembler_payload(content)
+    except PromptSelectionError as error:
+        error.status, error.finish = status, finish
+        raise
+    return {"selection": selection, "finish": finish, "model": body.get("model", profile["model"])}
+
+
+def _schema_unavailable(error: PromptSelectionError) -> bool:
+    if error.kind != "http" or error.status not in (400, 404, 422):
+        return False
+    detail = str(error).lower()
+    return (
+        any(word in detail for word in ("json_schema", "structured output", "response_format"))
+        or ("no endpoints" in detail and "parameter" in detail)
+    )
+
+
 async def select_prompt_assembly(
     context_block: str,
     discord_context: dict,
     capabilities: dict | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> dict:
-    """Selects style and useful work from the full short-term context."""
+    """Tries selector routes within one time budget; never executes tools."""
+    cancelled = cancelled or (lambda: False)
+    if cancelled():
+        return _cancelled_response()
     fallback = default_prompt_selection()
-    system_prompt, user_prompt = build_prompt_assembler_prompts(
-        context_block,
-        discord_context,
-        capabilities,
-    )
+    system_prompt, user_prompt = build_prompt_assembler_prompts(context_block, discord_context, capabilities)
+    original_messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+    turn_id = discord_context.get("message", {}).get("id", "unknown")
+    started = time.monotonic()
+    deadline = started + PROMPT_ASSEMBLER_TOTAL_SECONDS
 
-    result = await call_llm(
-        system_prompt,
-        user_prompt,
-        PROMPT_ASSEMBLER_PROFILE,
-        thermal_scalar=PROMPT_ASSEMBLER_TEMPERATURE,
-        allow_llm_formatter=False,
-        content_parser=parse_prompt_assembler_payload,
-    )
+    for profile_key in PROMPT_ASSEMBLER_CHAIN:
+        if cancelled():
+            return _cancelled_response()
+        if time.monotonic() >= deadline:
+            break
+        route_deadline = min(deadline, time.monotonic() + PROMPT_ASSEMBLER_ROUTE_SECONDS)
+        use_schema = bool(PROFILES.get(profile_key, {}).get("structured_outputs"))
+        messages = list(original_messages)
+        for attempt in range(PROMPT_ASSEMBLER_ATTEMPTS):
+            if cancelled():
+                return _cancelled_response()
+            remaining = route_deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                result = await asyncio.wait_for(
+                    _request_prompt_selection(profile_key, messages, use_schema),
+                    timeout=min(PROMPT_ASSEMBLER_REQUEST_SECONDS, remaining),
+                )
+            except asyncio.TimeoutError:
+                error = PromptSelectionError("timeout", "Selector request reached its time limit.", retryable=True)
+            except PromptSelectionError as failure:
+                error = failure
+            else:
+                if cancelled():
+                    return _cancelled_response()
+                logger.info(
+                    "[PROMPT ASSEMBLER] turn=%s route=%s model=%s finish=%s elapsed=%.2fs selection=%s",
+                    turn_id, profile_key, result["model"], result["finish"], time.monotonic() - started,
+                    json.dumps(result["selection"], ensure_ascii=False),
+                )
+                return result["selection"]
 
-    if result.get("_failed"):
-        logger.warning(
-            "[PROMPT ASSEMBLER] Selection failed. Using '%s'.",
-            fallback["assembly_id"],
-        )
-        return fallback
+            if cancelled():
+                return _cancelled_response()
+            logger.warning(
+                "[PROMPT ASSEMBLER] turn=%s route=%s attempt=%s/%s error=%s http=%s finish=%s detail=%s",
+                turn_id, profile_key, attempt + 1, PROMPT_ASSEMBLER_ATTEMPTS,
+                error.kind, error.status, error.finish, str(error)[:500],
+            )
+            if attempt + 1 >= PROMPT_ASSEMBLER_ATTEMPTS:
+                break
+            if use_schema and _schema_unavailable(error):
+                use_schema = False
+                logger.info("[PROMPT ASSEMBLER] %s: retrying with JSON mode and local validation.", profile_key)
+            elif error.correctable:
+                messages = list(original_messages)
+                if error.content.strip():
+                    messages.append({"role": "assistant", "content": error.content[:4000]})
+                messages.append({"role": "user", "content": (
+                    f"The previous selection was invalid: {str(error)[:500]}\n"
+                    "Return a complete JSON selection for the same original task. Keep task and reason brief. "
+                    "Use real JSON booleans. Do not execute tools or write Leepa's answer.\n"
+                    "Required schema: " + json.dumps(prompt_selection_schema(), ensure_ascii=False)
+                )})
+                logger.info("[PROMPT ASSEMBLER] %s: requesting one corrected selection.", profile_key)
+            elif error.retryable:
+                delay = min(PROMPT_ASSEMBLER_RETRY_DELAY, max(0.0, route_deadline - time.monotonic()))
+                if delay:
+                    await asyncio.sleep(delay)
+            else:
+                break
 
-    logger.info(
-        "[PROMPT ASSEMBLER] %s",
-        json.dumps(result, ensure_ascii=False),
+    if cancelled():
+        return _cancelled_response()
+    fallback["task"] = (
+        "The prompt selector was unavailable. This is not a decision to skip tools. "
+        "Use the conversation to determine the requested work and call the available tools needed to complete it. "
+        "Report any obstacles honestly."
     )
-    return result
+    fallback["reason"] = "Selector unavailable; the main model must assess the task itself."
+    logger.warning(
+        "[PROMPT ASSEMBLER] turn=%s no valid selection after %.2fs; default=%s. Main model will assess tool needs.",
+        turn_id, time.monotonic() - started, fallback["assembly_id"],
+    )
+    return fallback
 
 def _cancelled_response() -> dict:
     return {"response": "", "reaction_emoji": "", "internal_mood": "cancelled", "_failed": True, "_cancelled": True}
@@ -863,7 +1114,10 @@ async def generate_chat_response(
     if prompts.USE_PROMPT_ASSEMBLER and sloppy_mode is None:
         capabilities = session.capabilities()
         capabilities["web_search"] = capabilities["web_search"] and bool(PROVIDERS["openrouter"].get("key"))
-        selection = await select_prompt_assembly(context_block, discord_context, capabilities)
+        selection = await select_prompt_assembly(context_block, discord_context, capabilities, cancelled=cancelled)
+        if selection.get("_cancelled"):
+            session.closed = True
+            return selection
         session.set_selection(selection)
         prompt_assembly_id = selection["assembly_id"]
         thermal_scalar = draw_prompt_assembly_temperature(prompt_assembly_id)

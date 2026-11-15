@@ -29,6 +29,7 @@ KNOWN_BOT_IDS = {
     "sloppy": SLOPPY_ID,
     "buns": BUNS_ID,
     "warro": WARRO_ID,
+    "grinch": GRINCH_ID,
 }
 
 # Tool bots are remembered in chat history but never treated as speakers.
