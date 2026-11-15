@@ -5,7 +5,6 @@ from datetime import datetime
 from core import prompts
 from core.bot_registry import get_known_bot_name
 from core.server_config import available_commands, sloppy_enabled
-from core.tools import NOTEBOOK_INSTRUCTIONS
 
 
 def seed_words_enabled() -> bool:
@@ -56,6 +55,7 @@ def get_prompt_assembly(assembly_id: str | None) -> dict | None:
     for assembly in prompts.PROMPT_ASSEMBLIES:
         if assembly["id"] == assembly_id:
             return assembly
+
     return None
 
 
@@ -313,9 +313,9 @@ def build_system_prompt(
     if prompt_assembly:
         parts.append(prompt_assembly["prompt"])
 
-    if notebook_info is not None:
+    if prompts.USE_NOTEBOOK and notebook_info is not None:
         if notebook_info.get("available"):
-            parts.append(NOTEBOOK_INSTRUCTIONS)
+            parts.append(prompts.PROMPT_NOTEBOOK)
         else:
             parts.append("The persistent notebook is unavailable for this turn. Do not claim to have read or saved notes.")
 
