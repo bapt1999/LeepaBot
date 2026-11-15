@@ -17,6 +17,7 @@ from core.image_analysis import analyze_image
 from core.server_config import get_command_mode, sloppy_enabled, starts_sloppy_command, notebook_scope
 from core.tools import TOOL_TURN_SECONDS
 from core.code_runner import CodeImage, python_enabled, images_enabled
+from core.discord_history import DiscordHistory, ReactionFeedback
 
 # Initializes logging and loads environment variables from the .env file.
 logger = logging.getLogger(__name__)
@@ -30,6 +31,16 @@ active_processing_locks = {}
 active_channel_memories = {}
 active_bot_channels = set()
 bot_reply_cooldowns = {}
+reaction_feedback = ReactionFeedback()
+
+
+def remember_discord_message(message, bot_user):
+    if bot_user is not None and getattr(prompts, "USE_REACTION_FEEDBACK", False):
+        reaction_feedback.remember(message, bot_user.id)
+
+
+async def process_reaction_event(client, payload, action):
+    await reaction_feedback.handle(client, payload, action, get_channel_memory)
 
 # Each reply to a bot usually ends the exchange for a minute.
 BOT_REPLY_PAUSE_CHANCE = 0.80
@@ -231,7 +242,7 @@ async def process_message_edit(message, bot_user) -> None:
     )
 
 
-async def process_message(message, bot_user) -> None:
+async def process_message(message, bot_user, client=None) -> None:
     """Handles incoming Discord events and routes them to the external AI API."""
     current_time = time.time()
     incoming_is_bot = is_discord_bot(message)
@@ -344,7 +355,7 @@ async def process_message(message, bot_user) -> None:
     )
     active_processing_locks[message.id] = {
         "status": lock_status,
-        "expires": time.time() + (TOOL_TURN_SECONDS + 90.0 if notebook_scope(discord_context) or prompts.USE_WEB_SEARCH or python_enabled() else 60.0),
+        "expires": time.time() + (TOOL_TURN_SECONDS + 90.0 if notebook_scope(discord_context) or prompts.USE_WEB_SEARCH or python_enabled() or getattr(prompts, "USE_DISCORD_HISTORY", False) else 60.0),
     }
 
     try:
@@ -353,6 +364,7 @@ async def process_message(message, bot_user) -> None:
             discord_context,
             sloppy_mode,
             cancelled=lambda: active_processing_locks.get(message.id, {}).get("status") is True,
+            discord_reader=DiscordHistory(client, message.channel) if client is not None else None,
         )
 
         # pop() removes the lock regardless of whether execution is aborted.
@@ -425,6 +437,7 @@ async def process_message(message, bot_user) -> None:
                     )
                     options["file"] = attachment
                 sent_reply = await message.reply(reply_text or None, **options)
+                remember_discord_message(sent_reply, bot_user)
                 reply_was_sent = True
                 if code_image:
                     logger.info("[CODE] Published %s (%s bytes) in channel %s.", code_image.filename, len(code_image.data), message.channel.id)

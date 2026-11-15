@@ -394,8 +394,8 @@ def prompt_selection_schema() -> dict:
         "assembly_id": {"type": "string", "enum": list(prompt_assembly_ids())},
         "required_tools": {
             "type": "object",
-            "properties": {name: {"type": "boolean"} for name in ("python", "web_search", "notebook")},
-            "required": ["python", "web_search", "notebook"],
+            "properties": {name: {"type": "boolean"} for name in ("python", "web_search", "notebook", "discord_history")},
+            "required": ["python", "web_search", "notebook", "discord_history"],
             "additionalProperties": False,
         },
         "required_output": {"type": ["string", "null"], "enum": ["png", None]},
@@ -441,9 +441,9 @@ def parse_prompt_assembler_payload(content: str) -> dict:
     if not isinstance(data["assembly_id"], str) or data["assembly_id"] not in prompt_assembly_ids():
         raise invalid(f"assembly_id must be one of {prompt_assembly_ids()}.")
     required = data["required_tools"]
-    tool_names = ("python", "web_search", "notebook")
+    tool_names = ("python", "web_search", "notebook", "discord_history")
     if not isinstance(required, dict) or any(name not in required for name in tool_names):
-        raise invalid("required_tools must contain python, web_search, and notebook.")
+        raise invalid("required_tools must contain python, web_search, notebook, and discord_history.")
     if any(type(required[name]) is not bool for name in tool_names):
         raise invalid("Tool requirements must be JSON booleans, not strings or numbers.")
     if data["required_output"] not in (None, "png"):
@@ -1084,6 +1084,7 @@ async def generate_chat_response(
     discord_context: dict,
     sloppy_mode: str | None = None,
     cancelled: Callable[[], bool] | None = None,
+    discord_reader=None,
 ) -> dict:
     """Builds Leepa's prompt and sends it through the provider chain."""
     cancelled = cancelled or (lambda: False)
@@ -1092,7 +1093,7 @@ async def generate_chat_response(
     prompt_assembly_id = None
     thermal_scalar = None
 
-    session = ToolSession(discord_context, cancelled) if notebook_scope(discord_context) or prompts.USE_WEB_SEARCH or python_enabled() or prompts.USE_PROMPT_ASSEMBLER else None
+    session = ToolSession(discord_context, cancelled, discord_reader) if notebook_scope(discord_context) or prompts.USE_WEB_SEARCH or python_enabled() or prompts.USE_PROMPT_ASSEMBLER or (discord_reader is not None and discord_reader.enabled) else None
     notebook_info = None
     if session is not None and session.scope:
         try:
@@ -1134,6 +1135,7 @@ async def generate_chat_response(
         notebook_info,
         bool(session and session.web_enabled),
         bool(session and session.code_enabled),
+        bool(session and session.discord_enabled),
     )
     if session is not None:
         if thermal_scalar is None:

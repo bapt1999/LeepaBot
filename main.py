@@ -82,12 +82,13 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 # Imported after logging is configured so the logic layer inherits the handler.
-from core.logic import process_message, process_message_edit
+from core.logic import process_message, process_message_edit, process_reaction_event, remember_discord_message
 
 TOKEN = os.getenv('DISCORD_TOKEN')
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.reactions = True
 
 client = discord.Client(intents=intents)
 
@@ -101,11 +102,12 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
+    remember_discord_message(message, client.user)
     if message.author == client.user:
         return
 
     # The logic layer handles all Discord actions (replies, reactions) itself.
-    await process_message(message, client.user)
+    await process_message(message, client.user, client)
 
 
 @client.event
@@ -128,7 +130,28 @@ async def on_raw_message_edit(payload):
         logger.info(f"Could not load edited message {payload.message_id}: {exc}")
         return
 
+    remember_discord_message(message, client.user)
     await process_message_edit(message, client.user)
+
+
+@client.event
+async def on_raw_reaction_add(payload):
+    await process_reaction_event(client, payload, "add")
+
+
+@client.event
+async def on_raw_reaction_remove(payload):
+    await process_reaction_event(client, payload, "remove")
+
+
+@client.event
+async def on_raw_reaction_clear(payload):
+    await process_reaction_event(client, payload, "clear")
+
+
+@client.event
+async def on_raw_reaction_clear_emoji(payload):
+    await process_reaction_event(client, payload, "clear_emoji")
 
 
 client.run(TOKEN)

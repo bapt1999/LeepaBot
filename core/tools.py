@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from core import prompts, server_config
 from core.notebook import Notebook, NotebookError
 from core import code_runner
+from core import discord_history
 
 
 logger = logging.getLogger(__name__)
@@ -57,7 +58,7 @@ def _unique_object(pairs):
 
 
 class ToolSession:
-    def __init__(self, context: dict, cancelled):
+    def __init__(self, context: dict, cancelled, discord_reader=None):
         self.scope = server_config.notebook_scope(context)
         self.notebook = None
         message = context.get("message", {})
@@ -86,6 +87,9 @@ class ToolSession:
         self.python_succeeded = False
         self.code_blocked = False
         self.notebook_completed = set()
+        self.discord_reader = discord_reader
+        self.discord_calls = 0
+        self.discord_read_succeeded = False
         self.reminders = 0
         self.names = set(SPECS) if server_config.NOTEBOOK_WRITES and self.turn_id else READ_TOOLS
         self.definitions = [
@@ -102,7 +106,12 @@ class ToolSession:
             "png": self.code_enabled and code_runner.images_enabled(),
             "web_search": self.web_enabled,
             "notebook_tools": sorted(self.names) if self.notebook is not None else [],
+            "discord_tools": sorted(discord_history.SPECS) if self.discord_enabled else [],
         }
+
+    @property
+    def discord_enabled(self):
+        return bool(self.discord_reader is not None and self.discord_reader.enabled)
 
     def set_selection(self, selection: dict) -> None:
         self.selection = selection
@@ -119,6 +128,8 @@ class ToolSession:
         action = self.selection.get("notebook_action")
         if required.get("notebook") and action not in self.notebook_completed:
             missing.append("notebook")
+        if required.get("discord_history") and not self.discord_read_succeeded:
+            missing.append("discord_history")
         return missing
 
     def actionable_requirements(self) -> list[str]:
@@ -130,6 +141,8 @@ class ToolSession:
                 available = self.code_enabled and not self.code_blocked and self.code_runs < code_runner.MAX_CODE_RUNS
                 if name == "png":
                     available = available and code_runner.images_enabled()
+            elif name == "discord_history":
+                available = self.discord_enabled and self.discord_calls < discord_history.MAX_DISCORD_CALLS
             else:
                 available = (
                     self.notebook is not None and self.actions < MAX_TOOL_ACTIONS
@@ -144,7 +157,7 @@ class ToolSession:
 
     def failure_response(self, detail: str = "") -> dict:
         missing = self.missing_requirements()
-        labels = {"web_search": "web search", "python": "Python execution", "png": "the graph attachment", "notebook": "the requested notebook operation"}
+        labels = {"web_search": "web search", "python": "Python execution", "png": "the graph attachment", "notebook": "the requested notebook operation", "discord_history": "the Discord lookup"}
         work = ", ".join(labels[name] for name in missing) or "the requested task"
         logger.warning("[TOOLS] turn=%s unfinished=%s %s", self.turn_id, missing, detail)
         return {
@@ -184,6 +197,8 @@ class ToolSession:
             definitions.extend(self.definitions)
         if not final_only and self.code_enabled and not self.code_blocked and self.code_runs < code_runner.MAX_CODE_RUNS:
             definitions.append(code_runner.tool_definition())
+        if not final_only and self.discord_enabled and self.discord_calls < discord_history.MAX_DISCORD_CALLS:
+            definitions.extend(discord_history.tool_definitions())
         allowance = self.searches_remaining if provider == "openrouter" and not final_only else 0
         if allowance:
             definitions.append({
@@ -204,10 +219,11 @@ class ToolSession:
             "CURRENT TOOL AVAILABILITY FOR THIS REQUEST:\n"
             f"Web search: {'available' if allowance else 'unavailable'}; {allowance} searches allowed.\n"
             f"Notebook operations available: {0 if final_only else remaining_notes}.\n"
+            f"Discord lookups available: {max(0, discord_history.MAX_DISCORD_CALLS - self.discord_calls) if self.discord_enabled and not final_only else 0}.\n"
             f"Python runs available: {max(0, code_runner.MAX_CODE_RUNS - self.code_runs) if self.code_enabled and not self.code_blocked and not final_only else 0}.\n"
             f"PNG export: {'available' if self.code_enabled and code_runner.images_enabled() else 'unavailable'}.\n"
             "Use only the tools offered in this request. You may use earlier results as data. "
-            "Do not claim searches, execution, or notebook operations that did not happen."
+            "Do not claim searches, execution, Discord lookups, or notebook operations that did not happen."
         )
         if any(self.selection.get("required_tools", {}).values()) or self.selection.get("required_output"):
             status += "\nTURN SELECTION:\n" + json.dumps({
@@ -320,10 +336,36 @@ class ToolSession:
             logger.exception("[CODE] turn=%s execution failed", self.turn_id)
             return {"ok": False, "error": "Python execution failed. No image is queued."}
 
+    async def _execute_discord(self, call: dict) -> dict:
+        name = call["function"]["name"]
+        self.discord_calls += 1
+        started = time.monotonic()
+        try:
+            if not self.discord_enabled or self.cancelled() or self.discord_calls > discord_history.MAX_DISCORD_CALLS:
+                return {"ok": False, "error": "Discord lookup unavailable, cancelled, or out of calls."}
+            raw = call["function"].get("arguments", "")
+            if not isinstance(raw, str) or len(raw) > 8000:
+                raise ValueError("Invalid Discord tool arguments.")
+            args = json.loads(raw, object_pairs_hook=_unique_object)
+            result = await self.discord_reader.run(name, args, self.cancelled)
+            if self.cancelled():
+                return {"ok": False, "error": "Turn cancelled; discard this lookup."}
+            if result.get("ok") is True and name != "list_discord_channels":
+                self.discord_read_succeeded = True
+            logger.info("[DISCORD] turn=%s tool=%s channel=%s ok=%s %.2fs", self.turn_id, name, args.get("channel_id", "current"), result.get("ok"), time.monotonic() - started)
+            return result
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        except Exception:
+            logger.exception("[DISCORD] %s failed", name)
+            return {"ok": False, "error": "Discord lookup failed; do not claim it succeeded."}
+
     async def execute(self, call: dict) -> dict:
         name = call.get("function", {}).get("name", "")
         if name == "run_python":
             return await self._execute_python(call)
+        if name in discord_history.SPECS:
+            return await self._execute_discord(call)
         self.actions += 1
         started = time.monotonic()
         try:

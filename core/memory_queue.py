@@ -1,5 +1,8 @@
-from collections import deque
+from collections import deque, OrderedDict
+from datetime import datetime, timezone
+import json
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +18,41 @@ class ShortTermMemory:
         self.messages = deque()
         self.running_summary = ""
         self.is_summarizing = False
+        self.reaction_events = OrderedDict()
+
+    def record_reaction(self, target: dict, action: str, actor: dict | None, emoji: dict | None, burst: bool = False):
+        """Keep the latest observed changes without using ordinary message slots."""
+        key = target["id"]
+        now = time.monotonic()
+        self._prune_reactions(now)
+        entry = self.reaction_events.setdefault(key, {"message": target, "events": OrderedDict(), "updated": now})
+        entry["message"] = target
+        entry["updated"] = now
+        events = entry["events"]
+        emoji_key = (emoji or {}).get("id") or (emoji or {}).get("name")
+        if action == "clear":
+            events.clear()
+        elif action == "clear_emoji":
+            for event_key, event in list(events.items()):
+                old = event.get("emoji") or {}
+                if (old.get("id") or old.get("name")) == emoji_key:
+                    del events[event_key]
+        event_key = (str((actor or {}).get("discord_id", "")), emoji_key, burst)
+        events.pop(event_key, None)
+        events[event_key] = {
+            "action": action, "actor": actor, "emoji": emoji, "burst": burst,
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        while len(events) > 8:
+            events.popitem(last=False)
+        self.reaction_events.move_to_end(key)
+        while len(self.reaction_events) > 6:
+            self.reaction_events.popitem(last=False)
+
+    def _prune_reactions(self, now):
+        for key, entry in list(self.reaction_events.items()):
+            if now - entry["updated"] > 86400:
+                del self.reaction_events[key]
 
     def add_message(
         self,
@@ -63,6 +101,21 @@ class ShortTermMemory:
         context_parts.append("--- RECENT MESSAGES ---")
         for msg in self.messages:
             context_parts.append(f"{msg['author']}: {msg['content']}")
+
+        from core import prompts
+        if getattr(prompts, "USE_REACTION_FEEDBACK", False):
+            self._prune_reactions(time.monotonic())
+            records = []
+            size = 0
+            for entry in reversed(self.reaction_events.values()):
+                record = json.dumps({"message": entry["message"], "latest_observed_changes": list(entry["events"].values())}, ensure_ascii=False)
+                if size + len(record) > 6500:
+                    break
+                records.append(record)
+                size += len(record)
+            if records:
+                context_parts.append("--- RECENT REACTIONS TO LEEPA (OBSERVED CHANGES, NOT A COMPLETE ROSTER) ---")
+                context_parts.extend(reversed(records))
 
         return "\n".join(context_parts)
 

@@ -127,3 +127,19 @@ def notebook_scope(discord_context: dict) -> str | None:
         return f"servers/{server_id}/channels/{channel_id}"
     except (KeyError, TypeError, ValueError):
         return None
+
+
+# Extra readable channels, grouped by server. The current channel is always allowed.
+# Only add channels whose contents may be shared in Leepa's other chats in that server.
+# Threads need their own IDs; listing a parent does not expose its private threads.
+DISCORD_HISTORY_CHANNELS = {
+    # 123456789012345678: {234567890123456789, 345678901234567890},
+}
+
+
+def discord_channel_allowed(origin, target) -> bool:
+    guild = getattr(origin, "guild", None)
+    target_guild = getattr(target, "guild", None)
+    if guild is None or target_guild is None or guild.id != target_guild.id:
+        return False
+    return target.id == origin.id or target.id in DISCORD_HISTORY_CHANNELS.get(guild.id, set())

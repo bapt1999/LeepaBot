@@ -55,7 +55,6 @@ def get_prompt_assembly(assembly_id: str | None) -> dict | None:
     for assembly in prompts.PROMPT_ASSEMBLIES:
         if assembly["id"] == assembly_id:
             return assembly
-
     return None
 
 
@@ -75,7 +74,7 @@ def prompt_assembly_ids() -> tuple[str, ...]:
 def default_prompt_selection() -> dict:
     return {
         "assembly_id": default_prompt_assembly()["id"],
-        "required_tools": {"python": False, "web_search": False, "notebook": False},
+        "required_tools": {"python": False, "web_search": False, "notebook": False, "discord_history": False},
         "required_output": None,
         "notebook_action": None,
         "task": "",
@@ -115,7 +114,8 @@ def build_prompt_assembler_prompts(
         "=== CURRENT DISCORD EVENT ===",
         json.dumps(discord_context, indent=2, ensure_ascii=False),
     ])
-    return prompts.PROMPT_ASSEMBLER_SYSTEM.strip(), user_prompt
+    system_prompt = prompts.PROMPT_ASSEMBLER_SYSTEM.strip() + "\n\n" + prompts.PROMPT_ASSEMBLER_DISCORD.strip()
+    return system_prompt, user_prompt
 
 
 def expected_string_fields() -> tuple[str, ...]:
@@ -263,6 +263,7 @@ def build_system_prompt(
     notebook_info: dict | None = None,
     web_enabled: bool = False,
     python_enabled: bool = False,
+    discord_enabled: bool = False,
 ) -> str:
     discord_context = discord_context or {}
     help_mode = sloppy_mode == "leepa_help"
@@ -273,7 +274,7 @@ def build_system_prompt(
         f"Current Date: {datetime.now().strftime('%A, %B %d, %Y')}",
         build_output_contract(
             force_response=bool(command_prompt),
-            allow_tools=python_enabled or web_enabled or bool(notebook_info and notebook_info.get("available")),
+            allow_tools=python_enabled or web_enabled or discord_enabled or bool(notebook_info and notebook_info.get("available")),
         ),
     ]
 
@@ -293,6 +294,7 @@ def build_system_prompt(
             "available_commands": available_commands(discord_context),
             "web_search_enabled": web_enabled,
             "python_enabled": python_enabled,
+            "discord_history_enabled": discord_enabled,
             "python_images_enabled": python_enabled and bool(getattr(prompts, "USE_PYTHON_IMAGES", False)),
         }, ensure_ascii=False)
     )
@@ -324,6 +326,12 @@ def build_system_prompt(
 
     if web_enabled:
         parts.append(prompts.PROMPT_WEB_SEARCH)
+
+    if discord_enabled:
+        parts.append(prompts.PROMPT_DISCORD_HISTORY)
+
+    if getattr(prompts, "USE_REACTION_FEEDBACK", False):
+        parts.append(prompts.PROMPT_REACTION_FEEDBACK)
 
     if help_mode:
         parts.append(command_prompt)
@@ -378,8 +386,9 @@ def build_chat_prompts(
     notebook_info: dict | None = None,
     web_enabled: bool = False,
     python_enabled: bool = False,
+    discord_enabled: bool = False,
 ) -> tuple[str, str]:
     return (
-        build_system_prompt(discord_context, sloppy_mode, prompt_assembly_id, notebook_info, web_enabled, python_enabled),
+        build_system_prompt(discord_context, sloppy_mode, prompt_assembly_id, notebook_info, web_enabled, python_enabled, discord_enabled),
         build_user_prompt(context_block, discord_context, sloppy_mode, notebook_info),
     )
