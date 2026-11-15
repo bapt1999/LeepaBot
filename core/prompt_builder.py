@@ -358,7 +358,7 @@ def build_user_prompt(
         "=== CURRENT DISCORD EVENT ===",
         json.dumps(discord_context, indent=2, ensure_ascii=False),
         (
-            "Use each person's display_name when referring to them. "
+            "Use each person's display_name, or a shorter version of it, when referring to them. "
             "Discord IDs are only stable identity markers; never use an ID as someone's name."
         ),
     ]
